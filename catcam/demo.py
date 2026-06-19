@@ -54,7 +54,7 @@ def main(config_path: str = "config.json") -> None:
         seed_sample_clips(recorder, n=3)
         print("已塞入 3 段示例视频，可在网页上试标注。")
 
-    placeholder = _sample_frame(cfg.frame_width, cfg.frame_height, "DEMO 模式 (无摄像头)")
+    placeholder = _sample_frame(cfg.frame_width, cfg.frame_height, "DEMO MODE - no camera")
     app = create_app(stats, recorder, feedback, lambda: placeholder, cfg.clips_dir)
     print(
         f"演示网页已启动（绑定 {cfg.web_host}:{cfg.web_port}）；"
