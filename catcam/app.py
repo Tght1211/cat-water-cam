@@ -57,12 +57,16 @@ def main(config_path: str = "config.json") -> None:
     threading.Thread(
         target=_serve_web, args=(app, cfg.web_host, cfg.web_port), daemon=True
     ).start()
-    print(f"网页已启动： http://127.0.0.1:{cfg.web_port}")
+    print(
+        f"网页已启动（绑定 {cfg.web_host}:{cfg.web_port}）；"
+        f"本机访问 http://127.0.0.1:{cfg.web_port}"
+    )
 
     cap = cv2.VideoCapture(cfg.camera_index)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
     if not cap.isOpened():
+        cap.release()
         raise RuntimeError(f"打不开摄像头 index={cfg.camera_index}")
 
     interval = 1.0 / max(1, cfg.fps)
