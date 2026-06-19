@@ -48,3 +48,35 @@ def test_event_records_clip_and_stat(tmp_path):
     start, end = 0.0, 1e12
     assert pipe.stats.count_between(start, end) == 1
     assert (tmp_path / "clips" / clip_name).exists()
+
+
+class _SmallCatBelowThreshold:
+    """猫框只占画面一角，与水碗(整帧)的重叠 < min_overlap_ratio(0.15)。"""
+    def detect_cats(self, frame):
+        return [(0.0, 0.0, 16.0, 16.0)]   # 256 / 3072 ≈ 0.083
+
+
+class _PartialCatAboveThreshold:
+    """猫框部分覆盖，但重叠 >= min_overlap_ratio。"""
+    def detect_cats(self, frame):
+        return [(0.0, 0.0, 32.0, 32.0)]   # 1024 / 3072 ≈ 0.333
+
+
+def test_buffer_populated_on_no_event_frames(tmp_path):
+    pipe = _build(tmp_path, _NoCat())
+    pipe.process(now=0.0, frame=_frame())
+    pipe.process(now=1.0, frame=_frame())
+    assert len(pipe.frame_buffer.all_frames()) == 2
+
+
+def test_no_event_when_overlap_below_threshold(tmp_path):
+    pipe = _build(tmp_path, _SmallCatBelowThreshold())
+    assert pipe.process(now=0.0, frame=_frame()) is None
+    # 即便超过停留阈值，重叠不足也不算喝水
+    assert pipe.process(now=5.0, frame=_frame()) is None
+
+
+def test_event_when_overlap_above_threshold(tmp_path):
+    pipe = _build(tmp_path, _PartialCatAboveThreshold())
+    assert pipe.process(now=0.0, frame=_frame()) is None
+    assert pipe.process(now=3.0, frame=_frame()) == "clip_3000.mp4"
