@@ -77,3 +77,14 @@ def test_download_rejects_path_traversal(tmp_path):
     app, *_ = _build(tmp_path)
     client = TestClient(app)
     assert client.get("/clips/..%2F..%2Fsecret.txt").status_code in (400, 404)
+
+
+def test_clips_list_is_newest_first(tmp_path):
+    app, _, recorder, _ = _build(tmp_path)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    recorder.save_clip([frame], timestamp=1.0)
+    recorder.save_clip([frame], timestamp=3.0)
+    recorder.save_clip([frame], timestamp=2.0)
+    client = TestClient(app)
+    clips = client.get("/api/clips").json()["clips"]
+    assert clips == ["clip_3000.mp4", "clip_2000.mp4", "clip_1000.mp4"]

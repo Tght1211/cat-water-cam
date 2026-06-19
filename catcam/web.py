@@ -97,7 +97,7 @@ def create_app(
 
     @app.post("/api/feedback")
     def post_feedback(body: FeedbackBody):
-        if "/" in body.clip or ".." in body.clip:
+        if "/" in body.clip or "\\" in body.clip or ".." in body.clip:
             raise HTTPException(status_code=400, detail="bad clip")
         feedback.label_clip(clips_dir / body.clip, body.is_drinking)
         return JSONResponse({"ok": True})
