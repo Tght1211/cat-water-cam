@@ -41,3 +41,14 @@ def test_event_again_after_cooldown():
     evt = d.update(now=67.0, cat_in_roi=True)
     assert isinstance(evt, DrinkingEvent)
     assert evt.timestamp == 67.0
+
+
+def test_continuous_presence_through_cooldown():
+    d = DrinkingDetector(dwell_seconds=3.0, cooldown_seconds=10.0)
+    d.update(now=0.0, cat_in_roi=True)
+    d.update(now=3.0, cat_in_roi=True)   # 第一次事件，冷却到 13.0
+    for t in [5.0, 8.0, 12.9]:           # 冷却期内猫一直没离开
+        assert d.update(now=t, cat_in_roi=True) is None
+    # 冷却结束后第一帧重新起算停留
+    assert d.update(now=13.0, cat_in_roi=True) is None
+    assert d.update(now=16.0, cat_in_roi=True) is not None
