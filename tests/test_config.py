@@ -8,6 +8,8 @@ def test_defaults_have_expected_values():
     assert c.max_clips == 10
     assert c.bowl_roi == (0.3, 0.3, 0.7, 0.7)
     assert c.fps == 10
+    assert c.video_source == ""
+    assert c.web_host == "127.0.0.1"
 
 
 def test_derived_paths(tmp_path):

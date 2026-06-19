@@ -8,6 +8,9 @@ from pathlib import Path
 @dataclass
 class Config:
     camera_index: int = 0
+    # 视频源：留空则用 camera_index 摄像头；填一个视频文件路径则改用该文件
+    # （方便还没接摄像头时，用一段录好的视频测试识别/录制/标注全流程）。
+    video_source: str = ""
     frame_width: int = 640
     frame_height: int = 480
     fps: int = 10

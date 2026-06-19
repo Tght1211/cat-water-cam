@@ -62,12 +62,13 @@ def main(config_path: str = "config.json") -> None:
         f"本机访问 http://127.0.0.1:{cfg.web_port}"
     )
 
-    cap = cv2.VideoCapture(cfg.camera_index)
+    source = cfg.video_source if cfg.video_source else cfg.camera_index
+    cap = cv2.VideoCapture(source)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
     if not cap.isOpened():
         cap.release()
-        raise RuntimeError(f"打不开摄像头 index={cfg.camera_index}")
+        raise RuntimeError(f"打不开视频源： {source!r}")
 
     interval = 1.0 / max(1, cfg.fps)
     try:

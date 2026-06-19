@@ -24,6 +24,19 @@ def test_index_serves_html(tmp_path):
     assert "text/html" in r.headers["content-type"]
 
 
+def test_clips_list_includes_label_status(tmp_path):
+    app, _, recorder, feedback = _build(tmp_path)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    recorder.save_clip([frame], timestamp=1.0)
+    recorder.save_clip([frame], timestamp=2.0)
+    feedback.label_clip(recorder.clips_dir / "clip_2000.mp4", True)
+    client = TestClient(app)
+    body = client.get("/api/clips").json()
+    assert body["clips"] == ["clip_2000.mp4", "clip_1000.mp4"]
+    assert body["labels"]["clip_2000.mp4"] is True
+    assert body["labels"]["clip_1000.mp4"] is None
+
+
 def test_today_stats_counts_recent_event(tmp_path):
     app, stats, *_ = _build(tmp_path)
     stats.record_event(time.time(), "clip_x.mp4")

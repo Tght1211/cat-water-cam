@@ -31,16 +31,21 @@ async function refresh(){
   document.getElementById('count').textContent=s.count;
   document.getElementById('times').innerHTML=s.times.map(t=>`<li>${t}</li>`).join('');
   const c=await (await fetch('/api/clips')).json();
-  document.getElementById('clips').innerHTML=c.clips.map(n=>`
-    <div class="clip"><video src="/clips/${n}" controls width="320"></video><br>
+  const lab=c.labels||{};
+  document.getElementById('clips').innerHTML=c.clips.map(n=>{
+    const v=lab[n];
+    const status=v===true?'✅ 已标注：真喝水':v===false?'❌ 已标注：没喝':'⬜ 未标注';
+    return `<div class="clip"><video src="/clips/${n}" controls width="320"></video><br>
     <a href="/clips/${n}" download>下载 ${n}</a><br>
+    <span>${status}</span><br>
     <button onclick="fb('${n}',true)">👍 真喝水</button>
-    <button onclick="fb('${n}',false)">👎 没喝</button></div>`).join('');
+    <button onclick="fb('${n}',false)">👎 没喝</button></div>`;
+  }).join('');
 }
 async function fb(clip,is){
   await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({clip,is_drinking:is})});
-  alert('已记录反馈：'+clip);
+  refresh();
 }
 refresh();setInterval(refresh,5000);
 </script></body></html>"""
@@ -74,7 +79,9 @@ def create_app(
 
     @app.get("/api/clips")
     def clips():
-        return {"clips": [p.name for p in recorder.list_clips()]}
+        names = [p.name for p in recorder.list_clips()]
+        labels = {n: feedback.get_label(n) for n in names}
+        return {"clips": names, "labels": labels}
 
     @app.get("/clips/{name}")
     def get_clip(name: str):
