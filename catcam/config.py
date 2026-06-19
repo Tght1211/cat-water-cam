@@ -22,7 +22,9 @@ class Config:
     yolo_model: str = "yolov8n.pt"
     cat_confidence: float = 0.4
     data_dir: str = "data"
-    web_host: str = "0.0.0.0"
+    # 默认只绑定本机回环：用户远程进 Mac Mini 后用 localhost 访问，画面不出本机。
+    # 如需局域网内其它设备直接访问，可在 config.json 显式改为 "0.0.0.0"（会暴露给整个局域网）。
+    web_host: str = "127.0.0.1"
     web_port: int = 8000
 
     @property
