@@ -29,6 +29,11 @@ class ClipRecorder:
         height, width = frames[0].shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(path), fourcc, float(self.fps), (width, height))
+        if not writer.isOpened():
+            writer.release()
+            raise RuntimeError(
+                f"VideoWriter 打不开 {path}（编码器 mp4v 不可用？）"
+            )
         try:
             for f in frames:
                 writer.write(f)
