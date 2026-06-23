@@ -16,6 +16,7 @@ from catcam.netutil import lan_ip
 from catcam import nightvision
 from catcam.pipeline import Pipeline
 from catcam.recorder import ClipRecorder
+from catcam.session import DrinkSession
 from catcam.simple import MotionGrayDetector
 from catcam.stats import StatsStore
 from catcam.trainer import TrainingManager
@@ -54,6 +55,30 @@ class LatestFrame:
             return self._now, self._frame.copy(), self._night
 
 
+class Presence:
+    """检测线程写、采集线程读的「猫是否在水碗」状态（含当前状态起始时间）。
+
+    采集线程据此跑会话录制状态机；用 since 判断是否在场够久（dwell）。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._in = False
+        self._since = None
+
+    def set(self, now: float, in_roi: bool) -> None:
+        with self._lock:
+            if in_roi and not self._in:
+                self._since = now      # 刚进入在场 → 记起始时间
+            elif not in_roi:
+                self._since = None
+            self._in = in_roi
+
+    def get(self):
+        with self._lock:
+            return self._in, self._since
+
+
 def _serve_web(app, host: str, port: int) -> None:
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
@@ -69,16 +94,33 @@ def main(config_path: str = "config.json") -> None:
     trainer = TrainingManager(
         cfg.training_dir, cfg.models_dir, cfg.cls_base_model, cfg.train_epochs, cfg.train_imgsz
     )
+    # 会话录制要把「凑近过程 + dwell 这几秒」一起补进开头，缓冲就开这么长。
+    buffer_seconds = (
+        cfg.preroll_seconds + cfg.dwell_seconds if cfg.record_session else cfg.clip_seconds
+    )
+    frame_buffer = FrameBuffer(buffer_seconds, cfg.fps)
     pipeline = Pipeline(
         cat_detector=cat_detector,
         drinking_detector=DrinkingDetector(cfg.dwell_seconds, cfg.cooldown_seconds),
-        frame_buffer=FrameBuffer(cfg.clip_seconds, cfg.fps),
+        frame_buffer=frame_buffer,
         recorder=recorder,
         stats=stats,
         bowl_roi_ratio=cfg.bowl_roi,
         min_overlap_ratio=cfg.min_overlap_ratio,
         presence_detector=MotionGrayDetector(),
     )
+    session = (
+        DrinkSession(
+            recorder,
+            cfg.dwell_seconds,
+            cfg.session_end_grace_seconds,
+            cfg.max_session_seconds,
+            cfg.cooldown_seconds,
+        )
+        if cfg.record_session
+        else None
+    )
+    presence = Presence()
 
     latest = LatestFrame()
     app = create_app(stats, recorder, feedback, latest.get, cfg.clips_dir, trainer)
@@ -97,6 +139,11 @@ def main(config_path: str = "config.json") -> None:
         )
     if emailer.enabled:
         print(f"邮件提醒已开启 → {emailer.to}（最小间隔 {int(emailer.min_interval)}s）")
+    if cfg.record_session:
+        print(
+            f"录制模式：整段会话（前补 {cfg.preroll_seconds:g}s，"
+            f"离开 {cfg.session_end_grace_seconds:g}s 收尾，封顶 {cfg.max_session_seconds:g}s）"
+        )
 
     source = cfg.video_source if cfg.video_source else cfg.camera_index
     cap = cv2.VideoCapture(source)
@@ -106,10 +153,20 @@ def main(config_path: str = "config.json") -> None:
         cap.release()
         raise RuntimeError(f"打不开视频源： {source!r}")
 
-    buf_interval = 1.0 / max(1, cfg.fps)  # 回放缓冲按 fps 节奏喂，保证 clip 时长/速度正确
+    buf_interval = 1.0 / max(1, cfg.fps)  # 回放缓冲/会话写帧按 fps 节奏，保证时长/速度正确
 
-    # 采集线程：全速读相机 → 更新预览（让网页流畅），按 fps 节奏喂回放缓冲。
-    # 检测（YOLO，慢）不放这里，避免拖慢出图。
+    def _email_async(start_ts: float, photo) -> None:
+        # 邮件含 SMTP 往返，放后台线程绝不阻塞采集；限流在 emailer 内部判定。
+        if photo is None:
+            return
+        threading.Thread(
+            target=emailer.notify_drinking,
+            args=(stats, photo, datetime.fromtimestamp(start_ts)),
+            daemon=True,
+        ).start()
+
+    # 采集线程：全速读相机 → 更新预览（网页流畅）；按 fps 节奏喂回放缓冲，
+    # 会话录制也在这里按帧率写帧（writer fps 一致，播放速度才正确）。
     def _capture() -> None:
         last_buf = 0.0
         while True:
@@ -122,12 +179,20 @@ def main(config_path: str = "config.json") -> None:
             frame = nightvision.enhance_lowlight(raw) if night else raw
             latest.set(now, frame, night)
             if now - last_buf >= buf_interval:
-                pipeline.observe(now, frame)
                 last_buf = now
+                pipeline.observe(now, frame)
+                if session is not None:
+                    in_roi, since = presence.get()
+                    res = session.update(now, frame, in_roi, since, frame_buffer)
+                    if res is not None:
+                        print(f"记录一段喝水： {res.clip_name}")
+                        stats.record_event(res.timestamp, res.clip_name)
+                        _email_async(res.timestamp, res.photo)
 
     threading.Thread(target=_capture, daemon=True).start()
 
-    # 检测循环：按自己的节奏取最新帧跑识别；预览不受其拖累。
+    # 检测循环：按自己的节奏取最新帧跑识别；预览/录制不受其拖累。
+    # 会话模式：只更新「猫是否在碗」给采集线程的状态机；旧模式：直接定长录制。
     try:
         while True:
             state = latest.get_state()
@@ -135,19 +200,19 @@ def main(config_path: str = "config.json") -> None:
                 time.sleep(cfg.detect_interval_seconds)
                 continue
             now, frame, night = state
-            if night and not cfg.record_at_night:
-                time.sleep(cfg.detect_interval_seconds)
-                continue
-            clip = pipeline.detect(now, frame, night=night)
-            if clip:
-                print(f"记录一次喝水： {clip}")
-                # 邮件发送（含 SMTP 往返）放后台线程，绝不阻塞检测；限流在 emailer 内部判定。
-                snapshot = frame.copy()
-                threading.Thread(
-                    target=emailer.notify_drinking,
-                    args=(stats, snapshot, datetime.now()),
-                    daemon=True,
-                ).start()
+            blocked = night and not cfg.record_at_night
+            if session is not None:
+                in_roi = False if blocked else pipeline.cat_in_bowl(frame, night)
+                presence.set(now, in_roi)
+            elif not blocked:
+                clip = pipeline.detect(now, frame, night=night)
+                if clip:
+                    print(f"记录一次喝水： {clip}")
+                    _email_async(now, frame.copy())
             time.sleep(cfg.detect_interval_seconds)
     finally:
+        if session is not None:
+            res = session.close()
+            if res is not None:
+                stats.record_event(res.timestamp, res.clip_name)
         cap.release()

@@ -22,6 +22,11 @@ class Config:
     cooldown_seconds: float = 60.0
     clip_seconds: float = 4.0
     max_clips: int = 10
+    # 整段会话录制：从猫开始喝到离开都录下来（变长），而非固定 clip_seconds。
+    record_session: bool = True
+    preroll_seconds: float = 3.0          # 触发前补录这么久（猫凑近的过程）
+    session_end_grace_seconds: float = 3.0  # 猫离开持续这么久才算结束、收尾存盘
+    max_session_seconds: float = 90.0      # 单段封顶，防卡死无限录
     yolo_model: str = "yolov8n.pt"
     cat_confidence: float = 0.4
     data_dir: str = "data"

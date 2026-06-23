@@ -46,8 +46,9 @@ python3 -m venv .venv
 关键点：
 - **「猫在水碗」是两路 OR**：`vision.py` 的 YOLO 认猫（框压到水碗 ROI）**或** `simple.py` 的 `MotionGrayDetector`（水碗 ROI 内「画面变化 + 灰蓝色块」启发式，无需训练）。后者是为「模型没训好前先多录候选、之后人工标注」设计的，宁可多录。`pipeline.py` 先看 YOLO，没命中再问简单模型。
 - **触发逻辑全在 `detector.py`（`DrinkingDetector`）**，是个纯时间状态机（`_dwell_start` / `_cooldown_until`），不碰图像 —— 改触发行为先看这里。`pipeline.py` 只负责把"猫是否在碗里"这个布尔喂进去。
-- **采集与检测解耦**（为了预览流畅）：`app.py` 起一个**采集线程**全速读相机 → 更新 `LatestFrame`（预览用）+ 按 `fps` 节奏喂 `FrameBuffer`；**主线程是检测循环**，按 `detect_interval_seconds` 取最新帧跑 YOLO。慢的推理不再拖累出图。`FrameBuffer` 因此加了锁。网页实时画面走 **MJPEG**（`/stream.mjpg`，单连接连续推帧），不是刷快照。
-- **录的是过去几秒，不是触发之后** —— 每帧都进 `FrameBuffer`，触发时把整个缓冲 dump 成 mp4，所以能拍到猫凑近的过程。`ClipRecorder.save_clip` 写完即 `prune_dir` 只留最近 `max_clips` 段。**编码必须 H.264(`avc1`)**——`recorder.open_writer` 先试 avc1 再退回 mp4v；mp4v 浏览器 `<video>` 播不了（黑屏 0:00），网页要播就得 avc1。
+- **采集与检测解耦**（为了预览流畅）：`app.py` 起一个**采集线程**全速读相机 → 更新 `LatestFrame`（预览用）+ 按 `fps` 节奏喂 `FrameBuffer`；**主线程是检测循环**，按 `detect_interval_seconds` 取最新帧跑 YOLO，把「猫是否在碗」写进 `Presence`。慢的推理不再拖累出图/录制。`FrameBuffer` 因此加了锁。网页实时画面走 **MJPEG**（`/stream.mjpg`，单连接连续推帧），不是刷快照。
+- **整段会话录制（默认）**：`session.py` 的 `DrinkSession` 是状态机——猫在碗持续 `dwell_seconds` → 开录（先把 `FrameBuffer` 里「凑近过程 + dwell」写进去做 pre-roll）→ 猫还在就一直写 → 离开持续 `session_end_grace_seconds`（或到 `max_session_seconds` 封顶）→ 收尾存盘。**写帧只在采集线程**（按 fps 节奏，writer fps 一致播放速度才对），检测线程只更新 `Presence`。`record_session=False` 退回旧的「固定 `clip_seconds` 缓冲 dump」（`Pipeline.detect`）。会话录制时缓冲开到 `preroll+dwell` 秒。
+- **编码必须 H.264(`avc1`)**——`recorder.open_writer` 先试 avc1 再退回 mp4v；mp4v 浏览器 `<video>` 播不了（黑屏 0:00），网页要播就得 avc1。`prune_dir` 只留最近 `max_clips` 段。
 - **几何判定与 YOLO 解耦**：`geometry.py` 用 0–1 比例的 `bowl_roi`（与分辨率无关），`ratio_rect_to_pixels` 按当前帧尺寸换算；`cat_overlaps_bowl` 用 `交集 / 水碗面积 >= min_overlap_ratio` 判猫是否在碗里。
 - **两个 SQLite 表，同一个 `data/catcam.db`**：`StatsStore`→`events`（喝水事件），`FeedbackStore`→`labels`（人工标注）。每次连接都新开 `sqlite3.connect`，无连接池。
 - **标注即产训练数据**：`FeedbackStore.label_clip` 写 `labels` 表的同时，把该段 mp4 抽帧到 `data/training/{drinking,not_drinking}/`。
@@ -59,6 +60,7 @@ python3 -m venv .venv
 
 - **`data/` 与 `config.json` 都被 gitignore**（连同 `*.pt`、`.venv/`）。运行产物（视频、db、下载的权重、用户本地配置）不进库。
 - `catcam.demo` 与 `catcam.app` 共用同一个 `create_app`：web 层只依赖注入进来的 store / recorder / `frame_provider` 回调，不知道帧从哪来 —— 加网页功能改 `web.py`，两条入口都受益。
+- **网页是单文件标签页应用**（`web.py` 的 `INDEX_HTML`，无框架、纯 vanilla JS）：四个标签 总览/趋势/视频/训练，切到哪个才加载哪个的数据。**视频列表懒加载**：每段先显示封面缩略图（`/clips/{name}/thumb.jpg`，只解码首帧）+ 播放按钮，点了才把该段换成 `<video>`，避免一进来所有视频一起 `preload` 转圈。内联 `onclick` 里嵌 `JSON.stringify(name)` 时属性要用**单引号**（值含双引号），否则 handler 被截断。`今日喝水次数 / 时间点` 已**按标注过滤**（标「没喝」的事件不计，见 `stats.py` 的 LEFT JOIN labels）。
 - 测试覆盖每个模块且不依赖真实摄像头或 YOLO 权重：`vision.py` 把 YOLO 的 box 解析逻辑拆成纯函数 `filter_cat_boxes` 单测，`CatDetector` 用 `_FakeBox` 注入。新增逻辑沿用"纯函数 + 可注入依赖"以便单测。
 - web 文件名参数（`/clips/{name}`、feedback 的 `clip`）都手动挡 `/ \ ..` 防目录穿越，新增涉及路径的接口照做。
 - `web_host` 默认 `127.0.0.1`（画面不出本机）；改成 `0.0.0.0` 会暴露给整个局域网 —— 别擅自改默认。

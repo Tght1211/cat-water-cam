@@ -29,8 +29,8 @@ class Pipeline:
         """把帧放进回放缓冲。由采集线程按帧率调用，与检测解耦，保证录制连贯。"""
         self.frame_buffer.add(now, frame)
 
-    def detect(self, now: float, frame, night: bool = False) -> str | None:
-        """只做识别 + 触发录制（不碰缓冲）。由检测线程按自己的节奏调用。"""
+    def cat_in_bowl(self, frame, night: bool = False) -> bool:
+        """猫是否在水碗里：YOLO 认猫（框压 ROI）或简单模型命中。纯判断，不录制。"""
         height, width = frame.shape[:2]
         bowl = ratio_rect_to_pixels(self.bowl_roi_ratio, width, height)
         cats = self.cat_detector.detect_cats(frame)
@@ -39,6 +39,11 @@ class Pipeline:
         )
         if not cat_in_roi and self.presence_detector is not None:
             cat_in_roi = self.presence_detector.present(frame, bowl, night)
+        return cat_in_roi
+
+    def detect(self, now: float, frame, night: bool = False) -> str | None:
+        """只做识别 + 触发录制（不碰缓冲）。由检测线程按自己的节奏调用。"""
+        cat_in_roi = self.cat_in_bowl(frame, night)
         event = self.drinking_detector.update(now, cat_in_roi)
         if event is None:
             return None
