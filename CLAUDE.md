@@ -54,7 +54,10 @@ python3 -m venv .venv
 - **标注即产训练数据**：`FeedbackStore.label_clip` 写 `labels` 表的同时，把该段 mp4 抽帧到 `data/training/{drinking,not_drinking}/`。
 - **配置即 schema**：`config.py` 的 `Config` dataclass 是唯一真相，`load_config` 首次运行生成 `config.json` 并写默认值；读取时按 dataclass 字段过滤未知键，`bowl_roi` 强转 tuple。加配置项就改这个 dataclass。SMTP 凭据（`smtp_password` 是邮箱授权码）写在 `config.json`，已 gitignore。
 - **邮件提醒**：`mailer.py` 的 `Emailer` 走 QQ SMTP SSL（465）。`should_send` 做最小间隔限流（`mail_min_interval_seconds`，防误判刷屏）；`build_drinking_email`（纯函数、可单测）组装 HTML + 三张内嵌图（触发照片 + 周/月趋势）。趋势图在 `charts.py` 用 matplotlib Agg 渲染 PNG（标题用英文避开中文字体乱码）。邮件里的平台链接靠 `netutil.lan_ip()` 取真实内网 IP（会避开 VPN/TUN 的隧道地址，优先 RFC1918）。
-- **一键训练 / 自我迭代**：`trainer.py` 的 `TrainingManager`（后台线程 + 状态）把 `data/training/{drinking,not_drinking}` 整理成 train/val 两份目录，训 `yolov8n-cls`，产物存 `data/models/`，回报验证集准确率。网页 `开始训练` 按钮 → `/api/train`。本轮训练产物**只保存不自动接入**采集链路。标得越多越准 = 自我迭代。
+- **一键训练 / 模型版本 / 自我迭代**：`trainer.py` 的 `TrainingManager`（后台线程 + 状态）把 `data/training/{drinking,not_drinking}` 整理成 train/val，训 `yolov8n-cls`，回报验证集准确率。**训练 project 必须传绝对路径**（`Path(work_dir).resolve()`），否则 ultralytics 会把产物塞进 `runs/classify/<相对project>/`，按 `work_dir/cls/weights/best.pt` 找不到 `best.pt`。
+- **模型版本登记**：`models.py` 的 `ModelRegistry`（`data/models/registry.json`）每次训练登记一个版本 `vN`（准确率 + 抽帧数 + 标注快照 + 时间），`active` 指向当前生效版本。训练**不自动生效**，网页手动「设为生效」。
+- **生效模型 = 录制前确认**：`classifier.py` 的 `ActiveModel`（可热插拔、线程安全）持有当前 `DrinkingClassifier`；`Pipeline.cat_in_bowl` 在候选成立后用 `active_model.confirm(frame)` 确认「真喝水」才放行（没启用则放行，出错 fail-open 放行，坏模型不掐死录制）。网页 `/api/model/activate` 切换并热加载。
+- **标注状态 / 避免重复训练**：`labels` 表加了 `trained_version` 列（NULL=已标注未训练）。`FeedbackStore.label_states()` 给出 待标注（靠 web 比对当前 clips）/ 已标注未训练 / 已标注已训练 + 👍👎 计数；训练完 `mark_trained(version)` 把当前标注全标为已训练。`/api/train` 在「无新标注」时拒绝，避免重复无效训练。改标注会把 `trained_version` 清回 NULL（数据变了 = 又得练）。
 
 ## Conventions / gotchas
 

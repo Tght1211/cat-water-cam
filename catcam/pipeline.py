@@ -14,6 +14,7 @@ class Pipeline:
         bowl_roi_ratio,
         min_overlap_ratio: float,
         presence_detector=None,
+        active_model=None,
     ):
         self.cat_detector = cat_detector
         self.drinking_detector = drinking_detector
@@ -24,6 +25,8 @@ class Pipeline:
         self.min_overlap_ratio = min_overlap_ratio
         # 「简单模型」（画面变化 + 灰蓝猫色块）。与 YOLO 认猫取「或」，提高召回、多攒候选。
         self.presence_detector = presence_detector
+        # 生效的分类器（可选）：候选成立后再用它确认「真喝水」，没启用则一律放行。
+        self.active_model = active_model
 
     def observe(self, now: float, frame) -> None:
         """把帧放进回放缓冲。由采集线程按帧率调用，与检测解耦，保证录制连贯。"""
@@ -39,6 +42,9 @@ class Pipeline:
         )
         if not cat_in_roi and self.presence_detector is not None:
             cat_in_roi = self.presence_detector.present(frame, bowl, night)
+        # 候选成立 → 若启用了分类器，再确认是不是「真喝水」（没启用则放行）。
+        if cat_in_roi and self.active_model is not None:
+            cat_in_roi = self.active_model.confirm(frame)
         return cat_in_roi
 
     def detect(self, now: float, frame, night: bool = False) -> str | None:

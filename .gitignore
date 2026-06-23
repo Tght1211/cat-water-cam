@@ -6,3 +6,5 @@ data/
 .DS_Store
 *.egg-info/
 config.json
+runs/
+yolov8n-cls.pt

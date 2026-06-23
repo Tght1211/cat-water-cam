@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+import time
 from pathlib import Path
 
 CLASSES = ("drinking", "not_drinking")
@@ -53,7 +54,10 @@ def train_classifier(
             f"去网页上多点几段视频的 👍/👎 再训练。"
         )
 
-    dataset_dir = work_dir / "dataset"
+    # 必须用绝对路径：传相对 project 时 ultralytics 会把它塞进 runs/classify/<project>/，
+    # 害得我们按 work_dir/cls/... 找不到 best.pt。绝对路径则原样用作输出目录。
+    save_root = Path(work_dir).resolve()
+    dataset_dir = save_root / "dataset"
     prepare_dataset(training_dir, dataset_dir)
 
     from ultralytics import YOLO
@@ -63,7 +67,7 @@ def train_classifier(
         data=str(dataset_dir),
         epochs=epochs,
         imgsz=imgsz,
-        project=str(work_dir),
+        project=str(save_root),
         name="cls",
         exist_ok=True,
         verbose=False,
@@ -73,19 +77,34 @@ def train_classifier(
     rd = getattr(results, "results_dict", None)
     if isinstance(rd, dict):
         top1 = rd.get("metrics/accuracy_top1")
-    best = work_dir / "cls" / "weights" / "best.pt"
+    best = save_root / "cls" / "weights" / "best.pt"
     return {"counts": counts, "top1": top1, "model": str(best) if best.exists() else None}
 
 
 class TrainingManager:
-    """给网页用的训练状态机：一键开始、后台线程跑、随时查状态。"""
+    """给网页用的训练状态机：一键开始、后台线程跑、随时查状态。
 
-    def __init__(self, training_dir: Path, work_dir: Path, base_model: str, epochs: int, imgsz: int):
+    训完产出一个**带版本号的模型**登记进 registry（不自动生效），并把当时所有标注标记为
+    「已被该版本训练」，这样训练页能区分「已标注未训练 / 已标注已训练」、避免重复无效训练。
+    """
+
+    def __init__(
+        self,
+        training_dir: Path,
+        work_dir: Path,
+        base_model: str,
+        epochs: int,
+        imgsz: int,
+        feedback=None,
+        registry=None,
+    ):
         self.training_dir = Path(training_dir)
         self.work_dir = Path(work_dir)
         self.base_model = base_model
         self.epochs = epochs
         self.imgsz = imgsz
+        self.feedback = feedback
+        self.registry = registry
         self._lock = threading.Lock()
         self._state = "idle"  # idle | running | done | error
         self._detail = ""
@@ -93,8 +112,14 @@ class TrainingManager:
 
     def status(self) -> dict:
         with self._lock:
-            return {"state": self._state, "detail": self._detail, "result": self._result,
-                    "counts": count_images(self.training_dir)}
+            base = {"state": self._state, "detail": self._detail, "result": self._result,
+                    "image_counts": count_images(self.training_dir)}
+        if self.feedback is not None:
+            base["label_states"] = self.feedback.label_states()
+        if self.registry is not None:
+            base["models"] = self.registry.list()
+            base["active"] = self.registry.active_id()
+        return base
 
     def start(self) -> bool:
         with self._lock:
@@ -108,15 +133,33 @@ class TrainingManager:
 
     def _run(self) -> None:
         try:
+            label_snapshot = self.feedback.label_states() if self.feedback is not None else None
             res = train_classifier(
                 self.training_dir, self.work_dir, self.base_model, self.epochs, self.imgsz
             )
+            now = time.time()
+            version = None
+            if self.registry is not None and res.get("model"):
+                # 把本次 best.pt 另存成带时间戳的版本文件，登记进 registry。
+                src = Path(res["model"])
+                versioned = self.work_dir / f"model_{int(now)}.pt"
+                if src.exists():
+                    shutil.copy(src, versioned)
+                entry = self.registry.add(
+                    path=versioned, top1=res.get("top1"), image_counts=res.get("counts"),
+                    label_counts=label_snapshot, base=self.base_model,
+                    epochs=self.epochs, imgsz=self.imgsz, created_ts=now,
+                )
+                version = entry["id"]
+                if self.feedback is not None:
+                    self.feedback.mark_trained(version)
             acc = res.get("top1")
             acc_txt = f"{acc:.1%}" if isinstance(acc, (int, float)) else "—"
+            vtxt = f"{version} · " if version else ""
             with self._lock:
                 self._state = "done"
-                self._detail = f"训练完成，验证集准确率 {acc_txt}"
-                self._result = res
+                self._detail = f"训练完成（{vtxt}验证集准确率 {acc_txt}）。未自动生效，可在下方启用。"
+                self._result = {**res, "version": version, "created_ts": now}
         except Exception as e:  # noqa: BLE001
             with self._lock:
                 self._state = "error"

@@ -7,9 +7,11 @@ from datetime import datetime
 import cv2
 import uvicorn
 
+from catcam.classifier import ActiveModel, DrinkingClassifier
 from catcam.config import load_config
 from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
+from catcam.models import ModelRegistry
 from catcam.framebuffer import FrameBuffer
 from catcam.mailer import Emailer
 from catcam.netutil import lan_ip
@@ -91,8 +93,19 @@ def main(config_path: str = "config.json") -> None:
     recorder = ClipRecorder(cfg.clips_dir, cfg.max_clips, cfg.fps)
     feedback = FeedbackStore(cfg.db_path, cfg.training_dir)
     emailer = Emailer(cfg)
+    registry = ModelRegistry(cfg.models_dir / "registry.json")
+    active_model = ActiveModel()
+    # 启动时把上次选中的「生效模型」加载进来（若有）。
+    active_path = registry.active_path()
+    if active_path and Path(active_path).exists():
+        try:
+            active_model.set(DrinkingClassifier.from_path(active_path), registry.active_id())
+            print(f"已启用分类器：{registry.active_id()}（录制前确认真喝水）")
+        except Exception as e:  # noqa: BLE001
+            print(f"启用分类器失败，改用简单模型：{e}")
     trainer = TrainingManager(
-        cfg.training_dir, cfg.models_dir, cfg.cls_base_model, cfg.train_epochs, cfg.train_imgsz
+        cfg.training_dir, cfg.models_dir, cfg.cls_base_model, cfg.train_epochs, cfg.train_imgsz,
+        feedback=feedback, registry=registry,
     )
     # 会话录制要把「凑近过程 + dwell 这几秒」一起补进开头，缓冲就开这么长。
     buffer_seconds = (
@@ -108,6 +121,7 @@ def main(config_path: str = "config.json") -> None:
         bowl_roi_ratio=cfg.bowl_roi,
         min_overlap_ratio=cfg.min_overlap_ratio,
         presence_detector=MotionGrayDetector(),
+        active_model=active_model,
     )
     session = (
         DrinkSession(
@@ -123,7 +137,10 @@ def main(config_path: str = "config.json") -> None:
     presence = Presence()
 
     latest = LatestFrame()
-    app = create_app(stats, recorder, feedback, latest.get, cfg.clips_dir, trainer)
+    app = create_app(
+        stats, recorder, feedback, latest.get, cfg.clips_dir, trainer,
+        registry=registry, active_model=active_model,
+    )
     threading.Thread(
         target=_serve_web, args=(app, cfg.web_host, cfg.web_port), daemon=True
     ).start()

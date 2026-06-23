@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from catcam.charts import trend_png
+from catcam.classifier import DrinkingClassifier
 from catcam.recorder import ClipRecorder
 from catcam.feedback import FeedbackStore
 from catcam.stats import StatsStore, day_bounds
@@ -209,6 +210,24 @@ main{padding:30px 0 90px}
 .bar-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--green));
   border-radius:7px;transition:width .6s cubic-bezier(.22,1,.36,1)}
 .bar-cap{color:var(--muted);font-size:12.5px;margin-top:9px}
+.active-box{display:flex;align-items:center;gap:13px;flex-wrap:wrap}
+.active-tag{display:inline-flex;align-items:center;font-size:13px;font-weight:700;padding:7px 14px;border-radius:980px}
+.active-tag.on{background:rgba(52,199,89,.16);color:var(--green)}
+.active-tag.off{background:var(--bg);color:var(--muted);border:1px solid var(--line)}
+.mlist{display:flex;flex-direction:column;gap:12px}
+.mrow{display:flex;align-items:center;gap:16px;background:var(--surface);border:1px solid var(--line);
+  border-radius:16px;padding:15px 20px;box-shadow:var(--shadow);transition:border-color .2s,box-shadow .2s}
+.mrow.on{border-color:var(--accent);box-shadow:0 0 0 2px rgba(0,113,227,.22),var(--shadow)}
+.mrow .mv{font-size:16px;font-weight:700;display:flex;align-items:center;gap:9px}
+.mrow .macc{font-size:12px;font-weight:600;color:var(--accent);background:rgba(0,113,227,.1);padding:2px 9px;border-radius:980px}
+.mrow .mmeta{color:var(--muted);font-size:12.5px;margin-top:5px;font-variant-numeric:tabular-nums}
+.mrow .grow{flex:1}
+.mbtn{border:1px solid var(--line);background:var(--surface);color:var(--accent);border-radius:10px;
+  padding:9px 18px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
+.mbtn:hover:not(:disabled){background:var(--bg)}
+.mbtn.cur{background:var(--green);border-color:var(--green);color:#fff;cursor:default}
+.mbtn.off{color:var(--muted)}
+.mbtn:disabled{opacity:.5}
 </style></head>
 <body>
 <header><div class="wrap nav">
@@ -263,7 +282,7 @@ main{padding:30px 0 90px}
 <!-- 视频 -->
 <section id="tab-clips" class="tab">
 <div class="head"><div><h2>喝水视频</h2><p>点缩略图播放 · 点 👍/👎 标注攒训练数据</p></div>
-<div class="right">最多保留 10 段</div></div>
+<div class="right">最多保留 100 段</div></div>
 <div class="toolbar" id="filters">
 <button class="fchip on" onclick="setFilter('all',this)">全部</button>
 <button class="fchip" onclick="setFilter('none',this)">未标注</button>
@@ -275,23 +294,28 @@ main{padding:30px 0 90px}
 
 <!-- 训练 -->
 <section id="tab-train" class="tab">
-<div class="head"><div><h2>模型训练</h2><p>越标越准 · 自我迭代</p></div></div>
+<div class="head"><div><h2>模型训练</h2><p>越标越准 · 自我迭代 · 训练产出新版本但不自动生效，需手动启用</p></div></div>
+<div class="kpis">
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ict1"></span>待标注</div><div class="k-val"><span id="dsUn">–</span><small>段</small></div></div>
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ict2"></span>已标注·未训练</div><div class="k-val"><span id="dsNew">–</span><small>段</small></div></div>
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ict3"></span>已标注·已训练</div><div class="k-val"><span id="dsTr">–</span><small>段</small></div></div>
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ict4"></span>训练样本 👍/👎</div><div class="k-val" style="font-size:30px" id="dsBal">–</div><div class="mmeta" style="margin-top:6px">抽帧张数</div></div>
+</div>
 <div class="train-grid">
 <div class="card"><div class="card-b">
-<p>当前用「简单模型」（画面变化 + 灰蓝猫色块）先把候选都录下来，可能把路过/好奇凑近也记上。
-去「视频」里对每段点 👍真喝水 / 👎没喝，攒够样本后点下面训练「真喝水」分类器——标得越多越准。</p>
+<p>对「视频」里每段点 👍真喝水 / 👎没喝攒样本；这里把<b>未训练</b>的标注练成新版本分类器
+（用 <code>data/training</code> 下所有抽帧，产出 vN 版本与验证集准确率）。已训练过、没有新标注就不会重复练。</p>
 <button id="trainBtn" class="btn" onclick="train()">开始训练</button>
 <div class="t-status" id="trainStatus"></div>
 </div></div>
-<div class="card"><div class="card-b">
-<div class="lab-stat">
-<div class="box"><div class="n" id="trDr">0</div><div class="t">👍 真喝水</div></div>
-<div class="box"><div class="n" id="trNd">0</div><div class="t">👎 没喝</div></div>
-</div>
-<div class="bar-track"><div class="bar-fill" id="trBar"></div></div>
-<div class="bar-cap" id="trCap">每类至少 4 张可开训</div>
+<div class="card"><div class="card-h">当前生效模型</div><div class="card-b">
+<div id="activeBox" class="active-box"></div>
+<p style="color:var(--muted);font-size:12.5px;line-height:1.6;margin:16px 0 0">
+生效模型会在<b>录制前确认「真喝水」</b>，过滤好奇凑近的误触；停用则只用简单模型（宁可多录候选）。</p>
 </div></div>
 </div>
+<div class="head" style="margin-top:34px"><div><h2 style="font-size:21px">模型版本</h2><p>每次训练产出一个版本，可随时切换生效</p></div></div>
+<div id="modelList" class="mlist"></div>
 </section>
 
 </main>
@@ -309,6 +333,7 @@ const I={
   clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'
 };
 $('#ic1').innerHTML=I.drop; $('#ic2').innerHTML=I.cal; $('#ic3').innerHTML=I.avg; $('#ic4').innerHTML=I.clock;
+$('#ict1').innerHTML=I.cam; $('#ict2').innerHTML=I.drop; $('#ict3').innerHTML=I.check; $('#ict4').innerHTML=I.avg;
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
 /* 标签页切换 —— 视频只在打开「视频」页时才加载，避免一进来全部转圈 */
@@ -422,18 +447,53 @@ async function train(){
   if(!r.started&&r.error){$('#trainStatus').textContent=r.error;return;}
   pollTrain();
 }
+function fmtAcc(a){return (typeof a==='number')?(a*100).toFixed(1)+'%':'—';}
+function fmtTime(ts){if(!ts)return '';const d=new Date(ts*1000);
+  const p=n=>String(n).padStart(2,'0');return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;}
 async function pollTrain(){
   const s=await (await fetch('/api/train/status')).json();
-  const btn=$('#trainBtn'),st=$('#trainStatus'),c=s.counts||{};
-  const dr=c.drinking||0,nd=c.not_drinking||0;
-  $('#trDr').textContent=dr;$('#trNd').textContent=nd;
-  const ready=Math.min(dr/4,nd/4,1);
-  $('#trBar').style.width=(ready*100).toFixed(0)+'%';
-  $('#trCap').textContent=(dr>=4&&nd>=4)?'样本充足，可以开训':`每类至少 4 张可开训（还差 喝了 ${Math.max(0,4-dr)} / 没喝 ${Math.max(0,4-nd)}）`;
+  const ls=s.label_states||{labeled:0,drinking:0,not_drinking:0,untrained:0,trained:0};
+  const ic=s.image_counts||{drinking:0,not_drinking:0};   // 抽帧张数：训练实际用这个
+  $('#dsUn').textContent=(s.unlabeled??'–');
+  $('#dsNew').textContent=ls.untrained; $('#dsTr').textContent=ls.trained;
+  $('#dsBal').textContent=`${ic.drinking} / ${ic.not_drinking}`;
+  const btn=$('#trainBtn'),st=$('#trainStatus');
+  const enough=ic.drinking>=4&&ic.not_drinking>=4;
   if(s.state==='running'){btn.disabled=true;st.textContent=s.detail||'训练中…';
     if(!trainTimer)trainTimer=setInterval(pollTrain,3000);}
-  else{btn.disabled=false;st.textContent=s.state==='idle'?'':(s.detail||'');
-    if(trainTimer){clearInterval(trainTimer);trainTimer=null;}}
+  else{
+    if(trainTimer){clearInterval(trainTimer);trainTimer=null;}
+    if(!enough){btn.disabled=true;st.textContent=`样本不够：每类至少 4 张抽帧（👍${ic.drinking} / 👎${ic.not_drinking}）`;}
+    else if(ls.untrained===0&&ls.trained>0){btn.disabled=true;st.textContent='暂无新标注，无需重复训练';}
+    else{btn.disabled=false;st.textContent=s.state==='done'?(s.detail||''):(ls.untrained>0?`有 ${ls.untrained} 段新标注可训练`:'');}
+  }
+  renderActive(s); renderModels(s);
+}
+function renderActive(s){
+  const box=$('#activeBox'),m=(s.models||[]).find(x=>x.id===s.active);
+  box.innerHTML=m
+    ?`<span class="active-tag on">${m.id} 生效中</span><span style="font-size:13px;color:var(--muted)">验证准确率 <b style="color:var(--ink)">${fmtAcc(m.top1)}</b></span>`
+    :`<span class="active-tag off">未启用</span><span style="font-size:13px;color:var(--muted)">仅用简单模型（宁可多录候选）</span>`;
+}
+function renderModels(s){
+  const models=s.models||[];
+  let html=`<div class="mrow ${!s.active?'on':''}"><div><div class="mv">不启用任何模型</div>
+    <div class="mmeta">只用简单模型，宁可多录候选</div></div><div class="grow"></div>
+    <button class="mbtn ${!s.active?'cur':'off'}" ${!s.active?'':"onclick=\\"activate(null)\\""}>${!s.active?'生效中':'停用模型'}</button></div>`;
+  if(!models.length){html+=`<div class="empty" style="grid-column:auto">还没有训练过的模型。标注后点上面「开始训练」。</div>`;}
+  html+=models.map(m=>{const cur=m.id===s.active,ic=m.image_counts||{},lc=m.label_counts||{};
+    return `<div class="mrow ${cur?'on':''}"><div><div class="mv">${m.id} <span class="macc">${fmtAcc(m.top1)}</span></div>
+      <div class="mmeta">${fmtTime(m.created_ts)} · 抽帧 👍${ic.drinking||0}/👎${ic.not_drinking||0} · 标注 ${lc.labeled||0} 段</div></div>
+      <div class="grow"></div>
+      <button class="mbtn ${cur?'cur':''}" ${cur?'':`onclick="activate('${m.id}')"`}>${cur?'生效中':'设为生效'}</button></div>`;
+  }).join('');
+  $('#modelList').innerHTML=html;
+}
+async function activate(id){
+  document.querySelectorAll('.mbtn').forEach(b=>b.disabled=true);
+  try{await fetch('/api/model/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});}
+  catch(e){}
+  pollTrain();
 }
 
 /* 初始化 */
@@ -455,6 +515,8 @@ def create_app(
     frame_provider,
     clips_dir: Path,
     trainer=None,
+    registry=None,
+    active_model=None,
 ) -> FastAPI:
     app = FastAPI()
     clips_dir = Path(clips_dir)
@@ -479,10 +541,18 @@ def create_app(
         return Response(content=png, media_type="image/png",
                         headers={"Cache-Control": "no-store"})
 
+    def _unlabeled_count() -> int:
+        names = [p.name for p in recorder.list_clips()]
+        return sum(1 for n in names if feedback.get_label(n) is None)
+
     @app.post("/api/train")
     def train():
         if trainer is None:
             return JSONResponse({"started": False, "error": "本入口未启用训练"})
+        # 避免重复无效训练：没有「已标注未训练」的新数据就不练。
+        states = feedback.label_states()
+        if states["untrained"] == 0 and states["trained"] > 0:
+            return JSONResponse({"started": False, "error": "暂无新标注，无需重复训练"})
         started = trainer.start()
         return JSONResponse({"started": started,
                              "error": None if started else "已经在训练中"})
@@ -490,8 +560,31 @@ def create_app(
     @app.get("/api/train/status")
     def train_status():
         if trainer is None:
-            return {"state": "disabled", "detail": "本入口未启用训练", "counts": {}}
-        return trainer.status()
+            return {"state": "disabled", "detail": "本入口未启用训练", "models": [], "active": None}
+        s = trainer.status()
+        s["unlabeled"] = _unlabeled_count()  # 待标注（当前还在的视频里没标的）
+        return s
+
+    @app.post("/api/model/activate")
+    def activate(body: dict):
+        if registry is None or active_model is None:
+            raise HTTPException(status_code=400, detail="未启用模型管理")
+        model_id = body.get("id")  # None = 停用，只用简单模型
+        try:
+            registry.set_active(model_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="没有这个版本")
+        if model_id is None:
+            active_model.clear()
+        else:
+            path = registry.active_path()
+            if not path or not Path(path).exists():
+                raise HTTPException(status_code=404, detail="模型文件丢了")
+            try:
+                active_model.set(DrinkingClassifier.from_path(path), model_id)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=500, detail=f"加载失败：{e}")
+        return {"active": registry.active_id()}
 
     @app.get("/api/stats/today")
     def today():
