@@ -56,7 +56,11 @@ python3 -m venv .venv
 - **邮件提醒**：`mailer.py` 的 `Emailer` 走 QQ SMTP SSL（465）。`should_send` 做最小间隔限流（`mail_min_interval_seconds`，防误判刷屏）；`build_drinking_email`（纯函数、可单测）组装 HTML + 三张内嵌图（触发照片 + 周/月趋势）。趋势图在 `charts.py` 用 matplotlib Agg 渲染 PNG（标题用英文避开中文字体乱码）。邮件里的平台链接靠 `netutil.lan_ip()` 取真实内网 IP（会避开 VPN/TUN 的隧道地址，优先 RFC1918）。
 - **一键训练 / 模型版本 / 自我迭代**：`trainer.py` 的 `TrainingManager`（后台线程 + 状态）把 `data/training/{drinking,not_drinking}` 整理成 train/val，训 `yolov8n-cls`，回报验证集准确率。**训练 project 必须传绝对路径**（`Path(work_dir).resolve()`），否则 ultralytics 会把产物塞进 `runs/classify/<相对project>/`，按 `work_dir/cls/weights/best.pt` 找不到 `best.pt`。
 - **模型版本登记**：`models.py` 的 `ModelRegistry`（`data/models/registry.json`）每次训练登记一个版本 `vN`（准确率 + 抽帧数 + 标注快照 + 时间），`active` 指向当前生效版本。训练**不自动生效**，网页手动「设为生效」。
-- **生效模型 = 录制前确认**：`classifier.py` 的 `ActiveModel`（可热插拔、线程安全）持有当前 `DrinkingClassifier`；`Pipeline.cat_in_bowl` 在候选成立后用 `active_model.confirm(frame)` 确认「真喝水」才放行（没启用则放行，出错 fail-open 放行，坏模型不掐死录制）。网页 `/api/model/activate` 切换并热加载。
+- **兜底 + 测试模型（关键设计）**：简单模型/YOLO 是**兜底**，永远负责多录、保证召回；分类器是**测试模型**，两种模式（`classifier.py`）：
+  - `shadow`（测试，**默认**）：`ActiveModel.gate()` 恒放行 → **绝不拦截录制**，兜底全录；只用 `predict()` 给每段打个预测，记到 `events.predicted/predicted_by`，和人工标注一比就是「实战命中率」（`stats.model_hitrate`）。
+  - `gate`（过滤，opt-in）：`gate()` 用模型判「真喝水」才放行，过滤误触——**只在模型够准时用**。
+  - **教训**：早先把分类器当 `AND` 门（`cat_in_roi AND confirm()`），一个偏科模型（5👍/80👎 训出来、几乎全判「没喝」）直接把录制全掐死。模型还在迭代时**绝不能让它否决兜底**。`Pipeline.cat_in_bowl` 现在调 `active_model.gate(frame)`；shadow 恒 True。出错 fail-open。
+  - 模式持久化在 registry（`active_mode`），网页 `/api/model/activate {id,mode}` 热切换；视频列表显示模型对每段的判断（`/api/clips` 的 `predictions`）。
 - **标注状态 / 避免重复训练**：`labels` 表加了 `trained_version` 列（NULL=已标注未训练）。`FeedbackStore.label_states()` 给出 待标注（靠 web 比对当前 clips）/ 已标注未训练 / 已标注已训练 + 👍👎 计数；训练完 `mark_trained(version)` 把当前标注全标为已训练。`/api/train` 在「无新标注」时拒绝，避免重复无效训练。改标注会把 `trained_version` 清回 NULL（数据变了 = 又得练）。
 
 ## Conventions / gotchas

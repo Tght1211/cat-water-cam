@@ -29,17 +29,31 @@ def test_registry_persists(tmp_path):
     assert reg2.active_id() == "v1" and len(reg2.list()) == 1
 
 
+def test_registry_persists_active_mode(tmp_path):
+    p = tmp_path / "registry.json"
+    reg = ModelRegistry(p)
+    reg.add(path="x.pt", top1=0.5, image_counts={}, label_counts={}, base="b", epochs=1, imgsz=64, created_ts=1.0)
+    reg.set_active("v1", "gate")
+    assert ModelRegistry(p).active_mode() == "gate"
+
+
 class _AlwaysNo:
     def is_drinking(self, frame):
         return False
 
 
-def test_active_model_gate():
+def test_active_model_modes():
     am = ActiveModel()
     f = np.zeros((4, 4, 3), dtype=np.uint8)
-    assert am.confirm(f) is True            # 没启用 → 放行
-    am.set(_AlwaysNo(), "v1")
-    assert am.confirm(f) is False           # 启用且判「没喝」→ 拦
-    assert am.active_id == "v1"
+    # 没模型：放行，预测 None
+    assert am.gate(f) is True and am.predict(f) is None
+    # 测试(shadow)模式：恒放行（兜底不受影响），但仍给出预测
+    am.set(_AlwaysNo(), "v1")               # 默认 shadow
+    assert am.mode == "shadow"
+    assert am.gate(f) is True               # 关键：不拦截
+    assert am.predict(f) is False           # 但记录它判「没喝」
+    # 过滤(gate)模式：判「没喝」→ 拦
+    am.set(_AlwaysNo(), "v1", "gate")
+    assert am.mode == "gate" and am.gate(f) is False
     am.clear()
-    assert am.confirm(f) is True            # 停用 → 放行
+    assert am.gate(f) is True and am.predict(f) is None

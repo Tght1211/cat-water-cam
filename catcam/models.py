@@ -22,12 +22,13 @@ class ModelRegistry:
             try:
                 d = json.loads(self.path.read_text(encoding="utf-8"))
                 d.setdefault("active", None)
+                d.setdefault("active_mode", "shadow")
                 d.setdefault("next_seq", 1)
                 d.setdefault("models", [])
                 return d
             except (json.JSONDecodeError, OSError):
                 pass
-        return {"active": None, "next_seq": 1, "models": []}
+        return {"active": None, "active_mode": "shadow", "next_seq": 1, "models": []}
 
     def _save(self) -> None:
         self.path.write_text(
@@ -62,6 +63,10 @@ class ModelRegistry:
         with self._lock:
             return self._data.get("active")
 
+    def active_mode(self):
+        with self._lock:
+            return self._data.get("active_mode", "shadow")
+
     def get(self, model_id: str):
         with self._lock:
             for m in self._data["models"]:
@@ -69,11 +74,12 @@ class ModelRegistry:
                     return dict(m)
             return None
 
-    def set_active(self, model_id) -> None:
+    def set_active(self, model_id, mode: str = "shadow") -> None:
         with self._lock:
             if model_id is not None and not any(m["id"] == model_id for m in self._data["models"]):
                 raise KeyError(model_id)
             self._data["active"] = model_id
+            self._data["active_mode"] = mode if mode in ("shadow", "gate") else "shadow"
             self._save()
 
     def active_path(self):

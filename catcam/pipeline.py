@@ -42,9 +42,9 @@ class Pipeline:
         )
         if not cat_in_roi and self.presence_detector is not None:
             cat_in_roi = self.presence_detector.present(frame, bowl, night)
-        # 候选成立 → 若启用了分类器，再确认是不是「真喝水」（没启用则放行）。
+        # 候选成立 → 过 gate：测试(shadow)模式恒放行（兜底全录），只有过滤(gate)模式才用模型拦。
         if cat_in_roi and self.active_model is not None:
-            cat_in_roi = self.active_model.confirm(frame)
+            cat_in_roi = self.active_model.gate(frame)
         return cat_in_roi
 
     def detect(self, now: float, frame, night: bool = False) -> str | None:

@@ -39,3 +39,22 @@ def test_count_excludes_clips_labeled_not_drinking(tmp_path):
     with sqlite3.connect(tmp_path / "db.sqlite") as c:
         c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_a.mp4', 1, NULL)")
     assert stats.count_between(start, end) == 2
+
+
+def test_model_hitrate_and_predictions(tmp_path):
+    stats = StatsStore(tmp_path / "db.sqlite")
+    # 测试模型 v1 对三段的预测
+    stats.record_event(1.0, "a.mp4", predicted=1, predicted_by="v1")  # 判真喝水
+    stats.record_event(2.0, "b.mp4", predicted=1, predicted_by="v1")  # 判真喝水
+    stats.record_event(3.0, "c.mp4", predicted=0, predicted_by="v1")  # 判没喝
+    stats.record_event(4.0, "d.mp4", predicted=1, predicted_by="v2")  # 别的版本
+    # 人工标注：a 真喝(对)、b 没喝(错)、c 没喝(对)
+    with sqlite3.connect(tmp_path / "db.sqlite") as conn:
+        for name, val in [("a.mp4", 1), ("b.mp4", 0), ("c.mp4", 0)]:
+            conn.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES (?, ?, NULL)", (name, val))
+    hr = stats.model_hitrate("v1")
+    assert hr["total"] == 3 and hr["correct"] == 2          # a、c 对，b 错
+    assert abs(hr["rate"] - 2 / 3) < 1e-9
+    assert stats.model_hitrate("v9")["rate"] is None         # 没有该版本预测
+    preds = stats.clip_predictions()
+    assert preds["a.mp4"] is True and preds["c.mp4"] is False

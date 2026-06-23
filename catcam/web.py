@@ -210,6 +210,12 @@ main{padding:30px 0 90px}
 .bar-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--green));
   border-radius:7px;transition:width .6s cubic-bezier(.22,1,.36,1)}
 .bar-cap{color:var(--muted);font-size:12.5px;margin-top:9px}
+.amini{color:var(--muted);font-size:12.5px;line-height:1.65;margin:14px 0 0}
+.amini b{color:var(--ink)}
+.mpredline{margin-top:2px}
+.mpred{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:3px 9px;border-radius:980px}
+.mpred.y{background:rgba(52,199,89,.14);color:var(--green)}
+.mpred.n{background:rgba(255,159,10,.16);color:var(--amber)}
 .active-box{display:flex;align-items:center;gap:13px;flex-wrap:wrap}
 .active-tag{display:inline-flex;align-items:center;font-size:13px;font-weight:700;padding:7px 14px;border-radius:980px}
 .active-tag.on{background:rgba(52,199,89,.16);color:var(--green)}
@@ -309,9 +315,7 @@ main{padding:30px 0 90px}
 <div class="t-status" id="trainStatus"></div>
 </div></div>
 <div class="card"><div class="card-h">当前生效模型</div><div class="card-b">
-<div id="activeBox" class="active-box"></div>
-<p style="color:var(--muted);font-size:12.5px;line-height:1.6;margin:16px 0 0">
-生效模型会在<b>录制前确认「真喝水」</b>，过滤好奇凑近的误触；停用则只用简单模型（宁可多录候选）。</p>
+<div id="activeBox"></div>
 </div></div>
 </div>
 <div class="head" style="margin-top:34px"><div><h2 style="font-size:21px">模型版本</h2><p>每次训练产出一个版本，可随时切换生效</p></div></div>
@@ -399,20 +403,21 @@ function statusHtml(v){return v===true?`<span class="status s-yes"><i></i>真喝
   :v===false?`<span class="status s-no"><i></i>没喝</span>`:`<span class="status s-none"><i></i>未标注</span>`;}
 function renderClips(){
   if(!clipsData)return;
-  const lab=clipsData.labels||{},dur=clipsData.durations||{},box=$('#clips');
+  const lab=clipsData.labels||{},dur=clipsData.durations||{},pr=clipsData.predictions||{},box=$('#clips');
   if(!clipsData.clips.length){box.innerHTML=`<div class="empty">${I.cam}<div>还没有视频。接上摄像头跑 <code>python -m catcam</code>，猫在水碗停留就会自动录制。</div></div>`;return;}
   const items=clipsData.clips.filter(n=>{const v=lab[n];
     return clipFilter==='all'||(clipFilter==='none'&&v==null)||(clipFilter==='yes'&&v===true)||(clipFilter==='no'&&v===false);});
   if(!items.length){box.innerHTML='<div class="empty">这个筛选下没有视频</div>';return;}
   box.innerHTML=items.map(n=>{
-    const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n);
+    const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),pred=pr[n];
     const dtxt=d?`<span class="dur-badge">${d.toFixed(1)} 秒</span>`:'';
+    const predLine=(pred===undefined)?'':`<div class="mpredline"><span class="mpred ${pred?'y':'n'}">模型：${pred?'真喝水':'没喝'}</span></div>`;
     return `<div class="clip" data-name="${en}">
       <div class="thumb" onclick='playClip(this,${jn})'>
         <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
         <button class="play" aria-label="播放">${I.play}</button>${dtxt}</div>
       <div class="meta">
-        <div class="top"><span class="fname">${en}</span>${statusHtml(v)}</div>
+        <div class="top"><span class="fname">${en}</span>${statusHtml(v)}</div>${predLine}
         <div class="seg">
           <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
           <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
@@ -470,10 +475,26 @@ async function pollTrain(){
   renderActive(s); renderModels(s);
 }
 function renderActive(s){
-  const box=$('#activeBox'),m=(s.models||[]).find(x=>x.id===s.active);
-  box.innerHTML=m
-    ?`<span class="active-tag on">${m.id} 生效中</span><span style="font-size:13px;color:var(--muted)">验证准确率 <b style="color:var(--ink)">${fmtAcc(m.top1)}</b></span>`
-    :`<span class="active-tag off">未启用</span><span style="font-size:13px;color:var(--muted)">仅用简单模型（宁可多录候选）</span>`;
+  const box=$('#activeBox'),m=(s.models||[]).find(x=>x.id===s.active),mode=s.active_mode||'shadow';
+  if(!m){
+    box.innerHTML=`<div class="active-box"><span class="active-tag off">未启用</span>
+      <span style="font-size:13px;color:var(--muted)">仅用简单模型兜底（宁可多录候选）</span></div>
+      <p class="amini">训练出的模型默认<b>测试模式</b>：只预测、不拦截录制，简单模型继续兜底全录；
+      等它在真实数据上够准了，再切「过滤模式」让它过滤误触。</p>`;
+    return;
+  }
+  const hr=s.hitrate;
+  const hrTxt=hr&&hr.total?`实战命中 <b>${hr.correct}/${hr.total}</b>（${fmtAcc(hr.rate)}）`
+    :'实战命中 <b>—</b>（录到新喝水并标注后累计）';
+  box.innerHTML=`<div class="active-box"><span class="active-tag on">${m.id} 生效中</span>
+    <span style="font-size:13px;color:var(--muted)">验证 <b style="color:var(--ink)">${fmtAcc(m.top1)}</b> · ${hrTxt}</span></div>
+    <div class="seg-ctl" style="margin-top:14px">
+      <button class="${mode==='shadow'?'on':''}" onclick="activate('${m.id}','shadow')">测试模式</button>
+      <button class="${mode==='gate'?'on':''}" onclick="activate('${m.id}','gate')">过滤模式</button>
+    </div>
+    <p class="amini">${mode==='gate'
+      ?'<b>过滤模式</b>：模型判「没喝」就不录——只在它够准时用，否则会漏录真喝水。'
+      :'<b>测试模式</b>：只预测打分、<b>不拦截录制</b>，简单模型兜底全录；在「视频」里看模型判得准不准。'}</p>`;
 }
 function renderModels(s){
   const models=s.models||[];
@@ -489,9 +510,10 @@ function renderModels(s){
   }).join('');
   $('#modelList').innerHTML=html;
 }
-async function activate(id){
-  document.querySelectorAll('.mbtn').forEach(b=>b.disabled=true);
-  try{await fetch('/api/model/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});}
+async function activate(id,mode){
+  document.querySelectorAll('.mbtn,#activeBox .seg-ctl button').forEach(b=>b.disabled=true);
+  try{await fetch('/api/model/activate',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id,mode:mode||'shadow'})});}
   catch(e){}
   pollTrain();
 }
@@ -563,6 +585,9 @@ def create_app(
             return {"state": "disabled", "detail": "本入口未启用训练", "models": [], "active": None}
         s = trainer.status()
         s["unlabeled"] = _unlabeled_count()  # 待标注（当前还在的视频里没标的）
+        if registry is not None:
+            s["active_mode"] = registry.active_mode()
+            s["hitrate"] = stats.model_hitrate(registry.active_id()) if registry.active_id() else None
         return s
 
     @app.post("/api/model/activate")
@@ -570,8 +595,9 @@ def create_app(
         if registry is None or active_model is None:
             raise HTTPException(status_code=400, detail="未启用模型管理")
         model_id = body.get("id")  # None = 停用，只用简单模型
+        mode = body.get("mode") or "shadow"  # 默认测试模式（不拦截录制）
         try:
-            registry.set_active(model_id)
+            registry.set_active(model_id, mode)
         except KeyError:
             raise HTTPException(status_code=404, detail="没有这个版本")
         if model_id is None:
@@ -581,10 +607,10 @@ def create_app(
             if not path or not Path(path).exists():
                 raise HTTPException(status_code=404, detail="模型文件丢了")
             try:
-                active_model.set(DrinkingClassifier.from_path(path), model_id)
+                active_model.set(DrinkingClassifier.from_path(path), model_id, mode)
             except Exception as e:  # noqa: BLE001
                 raise HTTPException(status_code=500, detail=f"加载失败：{e}")
-        return {"active": registry.active_id()}
+        return {"active": registry.active_id(), "mode": registry.active_mode()}
 
     @app.get("/api/stats/today")
     def today():
@@ -598,7 +624,9 @@ def create_app(
         names = [p.name for p in recorder.list_clips()]
         labels = {n: feedback.get_label(n) for n in names}
         durations = {n: clip_duration(clips_dir / n) for n in names}
-        return {"clips": names, "labels": labels, "durations": durations}
+        preds = stats.clip_predictions()
+        predictions = {n: preds[n] for n in names if n in preds}  # 测试模型对该段的判断
+        return {"clips": names, "labels": labels, "durations": durations, "predictions": predictions}
 
     @app.get("/clips/{name}/thumb.jpg")
     def clip_thumb(name: str):

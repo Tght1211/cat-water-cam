@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 import cv2
 import uvicorn
@@ -99,8 +100,10 @@ def main(config_path: str = "config.json") -> None:
     active_path = registry.active_path()
     if active_path and Path(active_path).exists():
         try:
-            active_model.set(DrinkingClassifier.from_path(active_path), registry.active_id())
-            print(f"已启用分类器：{registry.active_id()}（录制前确认真喝水）")
+            mode = registry.active_mode()
+            active_model.set(DrinkingClassifier.from_path(active_path), registry.active_id(), mode)
+            tip = "过滤误触" if mode == "gate" else "测试模式，只评估不拦截录制"
+            print(f"已启用分类器：{registry.active_id()}（{mode} · {tip}）")
         except Exception as e:  # noqa: BLE001
             print(f"启用分类器失败，改用简单模型：{e}")
     trainer = TrainingManager(
@@ -203,7 +206,13 @@ def main(config_path: str = "config.json") -> None:
                     res = session.update(now, frame, in_roi, since, frame_buffer)
                     if res is not None:
                         print(f"记录一段喝水： {res.clip_name}")
-                        stats.record_event(res.timestamp, res.clip_name)
+                        # 测试模型对这段的预测（不影响是否录，仅记下来供评估）。
+                        pred = active_model.predict(res.photo)
+                        stats.record_event(
+                            res.timestamp, res.clip_name,
+                            predicted=None if pred is None else int(pred),
+                            predicted_by=active_model.active_id,
+                        )
                         _email_async(res.timestamp, res.photo)
 
     threading.Thread(target=_capture, daemon=True).start()

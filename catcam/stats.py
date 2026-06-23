@@ -22,6 +22,13 @@ class StatsStore:
                 "ts REAL NOT NULL, "
                 "clip_name TEXT)"
             )
+            # 迁移：记录「测试模型」当时对这段的预测（1/0/NULL）及是哪个版本预测的，
+            # 之后和人工标注一比就是模型在真实数据上的命中率。
+            ecols = [r[1] for r in conn.execute("PRAGMA table_info(events)")]
+            if "predicted" not in ecols:
+                conn.execute("ALTER TABLE events ADD COLUMN predicted INTEGER")
+            if "predicted_by" not in ecols:
+                conn.execute("ALTER TABLE events ADD COLUMN predicted_by TEXT")
             # labels 表由 FeedbackStore 维护（同一个 db）。这里也 IF NOT EXISTS 一下，
             # 保证统计查询的 LEFT JOIN 永远有表可连（无论两个 store 谁先初始化）。
             conn.execute(
@@ -34,13 +41,42 @@ class StatsStore:
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
 
-    def record_event(self, timestamp: float, clip_name: str | None = None) -> int:
+    def record_event(
+        self,
+        timestamp: float,
+        clip_name: str | None = None,
+        predicted: int | None = None,
+        predicted_by: str | None = None,
+    ) -> int:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO events (ts, clip_name) VALUES (?, ?)",
-                (timestamp, clip_name),
+                "INSERT INTO events (ts, clip_name, predicted, predicted_by) VALUES (?, ?, ?, ?)",
+                (timestamp, clip_name, predicted, predicted_by),
             )
             return int(cur.lastrowid)
+
+    def model_hitrate(self, version: str) -> dict:
+        """某版本「测试模型」在真实数据上的命中率：它预测过、且该段已人工标注的，预测对了多少。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT e.predicted, l.is_drinking FROM events e "
+                "JOIN labels l ON e.clip_name = l.clip_name "
+                "WHERE e.predicted IS NOT NULL AND e.predicted_by = ?",
+                (version,),
+            ).fetchall()
+        total = len(rows)
+        correct = sum(1 for pred, label in rows if int(pred) == int(label))
+        return {"total": total, "correct": correct,
+                "rate": (correct / total) if total else None}
+
+    def clip_predictions(self) -> dict:
+        """{clip_name: 预测bool}，给视频列表显示「模型怎么判」。一段多次取最新。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT clip_name, predicted FROM events "
+                "WHERE clip_name IS NOT NULL AND predicted IS NOT NULL ORDER BY ts ASC"
+            ).fetchall()
+        return {name: bool(pred) for name, pred in rows}
 
     def count_between(self, start_ts: float, end_ts: float) -> int:
         # 「真实喝水」= 没被人工标注成「没喝」的事件。
