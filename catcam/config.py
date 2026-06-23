@@ -30,6 +30,30 @@ class Config:
     web_host: str = "127.0.0.1"
     web_port: int = 8000
 
+    # 邮件提醒：猫来喝水时发一封带照片+今日次数+周/月趋势的 HTML 邮件。
+    # 凭据写在 config.json（已 gitignore，不进库）。SMTP 密码是邮箱「授权码」，不是登录密码。
+    mail_enabled: bool = False
+    smtp_host: str = "smtp.qq.com"
+    smtp_port: int = 465  # QQ 邮箱 SSL
+    smtp_user: str = ""   # 发件邮箱（如 2890549308@qq.com）
+    smtp_password: str = ""  # 授权码
+    mail_to: str = ""     # 收件邮箱
+    # 限流：同一时间窗内最多发一封，防止误判刷屏（模型没训好时尤其重要）。
+    mail_min_interval_seconds: float = 600.0
+
+    # 模型训练（网页一键）：用 👍/👎 标注帧训练「真喝水/没喝」分类器。
+    cls_base_model: str = "yolov8n-cls.pt"
+    train_epochs: int = 15
+    train_imgsz: int = 96
+
+    # 夜间/弱光（此摄像头无红外）：整体亮度低于阈值算「暗」，暗帧做弱光增强后
+    # 用「画面变化」识别行为。record_at_night=False 则天黑直接不记录。
+    night_brightness_threshold: float = 50.0
+    record_at_night: bool = True
+
+    # 检测节奏：每隔这么久跑一次 YOLO 识别（与采集/预览解耦，预览始终流畅）。
+    detect_interval_seconds: float = 0.2
+
     @property
     def clips_dir(self) -> Path:
         return Path(self.data_dir) / "clips"
@@ -37,6 +61,10 @@ class Config:
     @property
     def training_dir(self) -> Path:
         return Path(self.data_dir) / "training"
+
+    @property
+    def models_dir(self) -> Path:
+        return Path(self.data_dir) / "models"
 
     @property
     def db_path(self) -> Path:

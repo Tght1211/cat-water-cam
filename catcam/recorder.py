@@ -9,6 +9,20 @@ def clip_filename(timestamp: float) -> str:
     return f"clip_{int(timestamp * 1000)}.mp4"
 
 
+def open_writer(path: Path, fps: int, size: tuple[int, int]):
+    """优先用 H.264(avc1) —— 浏览器 <video> 才认；这台 OpenCV 装不出就退回 mp4v。
+
+    注意：mp4v(MPEG-4 Part 2) 文件能存能用播放器看，但 Chrome/Safari 的 <video>
+    多半解不了，会黑屏 0:00。所以网页要播就必须 avc1。
+    """
+    for cc in ("avc1", "mp4v"):
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*cc), float(fps), size)
+        if writer.isOpened():
+            return writer
+        writer.release()
+    raise RuntimeError(f"VideoWriter 打不开 {path}（avc1/mp4v 都不可用？）")
+
+
 def prune_dir(clips_dir: Path, max_clips: int) -> None:
     clips = sorted(clips_dir.glob("clip_*.mp4"))
     for old in clips[:-max_clips] if max_clips > 0 else clips:
@@ -27,13 +41,7 @@ class ClipRecorder:
             raise ValueError("frames 为空，无法录制")
         path = self.clips_dir / clip_filename(timestamp)
         height, width = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(path), fourcc, float(self.fps), (width, height))
-        if not writer.isOpened():
-            writer.release()
-            raise RuntimeError(
-                f"VideoWriter 打不开 {path}（编码器 mp4v 不可用？）"
-            )
+        writer = open_writer(path, self.fps, (width, height))
         try:
             for f in frames:
                 writer.write(f)

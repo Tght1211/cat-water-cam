@@ -1,0 +1,72 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+纯本地的猫咪饮水监控：USB 摄像头 → 认猫（YOLO + 启发式简单模型）→ 猫在水碗区域停留即触发，回放缓冲区里最近几秒帧录成 mp4，记录每日喝水次数。网页平台（可局域网访问）看实时画面/趋势/视频并对每段点 👍/👎 攒训练数据，攒够后一键训练分类器（自我迭代）。猫来喝水时发邮件提醒（照片+今日次数+周/月趋势）。**视频/画面只在本机与同局域网内流转**。注释与面向用户的字符串用中文，保持一致。
+
+## Commands
+
+```bash
+# 环境（首次）
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/pip install -r requirements.txt   # 首次运行会自动下载一次 yolov8n.pt
+
+# 真实采集（需摄像头）
+.venv/bin/python -m catcam
+
+# 演示/试标注（无摄像头，自动塞 3 段示例视频，只起网页）
+.venv/bin/python -m catcam.demo
+
+# 测试
+.venv/bin/pytest -q
+.venv/bin/pytest tests/test_pipeline.py -q          # 单文件
+.venv/bin/pytest tests/test_pipeline.py::test_name  # 单测
+```
+
+打开 `http://127.0.0.1:8000` 看网页。没接摄像头但想跑完整识别/录制链路时，在 `config.json` 的 `video_source` 填一段录好的视频文件路径即可。
+
+## Architecture
+
+数据流是一条单向链，`catcam/app.py:main` 把各组件装配起来后跑采集循环；网页跑在 daemon 线程上，与采集循环之间靠 `LatestFrame`（带锁）和 SQLite 共享状态。
+
+```
+摄像头/视频 ──frame──► Pipeline.process(now, frame)
+                          │
+        FrameBuffer.add ──┤  滚动回放缓冲（deque，长度 = clip_seconds * fps）
+   CatDetector.detect ────┤  YOLO 出框 → geometry 算与水碗 ROI 的交集占比
+ DrinkingDetector.update ─┤  停留 dwell_seconds 才触发，触发后进 cooldown
+                          └─► ClipRecorder.save_clip（写整段缓冲）+ StatsStore.record_event
+```
+
+事件发生后，`app.py` 主循环额外起后台线程发邮件（`Emailer.notify_drinking`，内部限流）。
+
+关键点：
+- **「猫在水碗」是两路 OR**：`vision.py` 的 YOLO 认猫（框压到水碗 ROI）**或** `simple.py` 的 `MotionGrayDetector`（水碗 ROI 内「画面变化 + 灰蓝色块」启发式，无需训练）。后者是为「模型没训好前先多录候选、之后人工标注」设计的，宁可多录。`pipeline.py` 先看 YOLO，没命中再问简单模型。
+- **触发逻辑全在 `detector.py`（`DrinkingDetector`）**，是个纯时间状态机（`_dwell_start` / `_cooldown_until`），不碰图像 —— 改触发行为先看这里。`pipeline.py` 只负责把"猫是否在碗里"这个布尔喂进去。
+- **采集与检测解耦**（为了预览流畅）：`app.py` 起一个**采集线程**全速读相机 → 更新 `LatestFrame`（预览用）+ 按 `fps` 节奏喂 `FrameBuffer`；**主线程是检测循环**，按 `detect_interval_seconds` 取最新帧跑 YOLO。慢的推理不再拖累出图。`FrameBuffer` 因此加了锁。网页实时画面走 **MJPEG**（`/stream.mjpg`，单连接连续推帧），不是刷快照。
+- **录的是过去几秒，不是触发之后** —— 每帧都进 `FrameBuffer`，触发时把整个缓冲 dump 成 mp4，所以能拍到猫凑近的过程。`ClipRecorder.save_clip` 写完即 `prune_dir` 只留最近 `max_clips` 段。**编码必须 H.264(`avc1`)**——`recorder.open_writer` 先试 avc1 再退回 mp4v；mp4v 浏览器 `<video>` 播不了（黑屏 0:00），网页要播就得 avc1。
+- **几何判定与 YOLO 解耦**：`geometry.py` 用 0–1 比例的 `bowl_roi`（与分辨率无关），`ratio_rect_to_pixels` 按当前帧尺寸换算；`cat_overlaps_bowl` 用 `交集 / 水碗面积 >= min_overlap_ratio` 判猫是否在碗里。
+- **两个 SQLite 表，同一个 `data/catcam.db`**：`StatsStore`→`events`（喝水事件），`FeedbackStore`→`labels`（人工标注）。每次连接都新开 `sqlite3.connect`，无连接池。
+- **标注即产训练数据**：`FeedbackStore.label_clip` 写 `labels` 表的同时，把该段 mp4 抽帧到 `data/training/{drinking,not_drinking}/`。
+- **配置即 schema**：`config.py` 的 `Config` dataclass 是唯一真相，`load_config` 首次运行生成 `config.json` 并写默认值；读取时按 dataclass 字段过滤未知键，`bowl_roi` 强转 tuple。加配置项就改这个 dataclass。SMTP 凭据（`smtp_password` 是邮箱授权码）写在 `config.json`，已 gitignore。
+- **邮件提醒**：`mailer.py` 的 `Emailer` 走 QQ SMTP SSL（465）。`should_send` 做最小间隔限流（`mail_min_interval_seconds`，防误判刷屏）；`build_drinking_email`（纯函数、可单测）组装 HTML + 三张内嵌图（触发照片 + 周/月趋势）。趋势图在 `charts.py` 用 matplotlib Agg 渲染 PNG（标题用英文避开中文字体乱码）。邮件里的平台链接靠 `netutil.lan_ip()` 取真实内网 IP（会避开 VPN/TUN 的隧道地址，优先 RFC1918）。
+- **一键训练 / 自我迭代**：`trainer.py` 的 `TrainingManager`（后台线程 + 状态）把 `data/training/{drinking,not_drinking}` 整理成 train/val 两份目录，训 `yolov8n-cls`，产物存 `data/models/`，回报验证集准确率。网页 `开始训练` 按钮 → `/api/train`。本轮训练产物**只保存不自动接入**采集链路。标得越多越准 = 自我迭代。
+
+## Conventions / gotchas
+
+- **`data/` 与 `config.json` 都被 gitignore**（连同 `*.pt`、`.venv/`）。运行产物（视频、db、下载的权重、用户本地配置）不进库。
+- `catcam.demo` 与 `catcam.app` 共用同一个 `create_app`：web 层只依赖注入进来的 store / recorder / `frame_provider` 回调，不知道帧从哪来 —— 加网页功能改 `web.py`，两条入口都受益。
+- 测试覆盖每个模块且不依赖真实摄像头或 YOLO 权重：`vision.py` 把 YOLO 的 box 解析逻辑拆成纯函数 `filter_cat_boxes` 单测，`CatDetector` 用 `_FakeBox` 注入。新增逻辑沿用"纯函数 + 可注入依赖"以便单测。
+- web 文件名参数（`/clips/{name}`、feedback 的 `clip`）都手动挡 `/ \ ..` 防目录穿越，新增涉及路径的接口照做。
+- `web_host` 默认 `127.0.0.1`（画面不出本机）；改成 `0.0.0.0` 会暴露给整个局域网 —— 别擅自改默认。
+
+## 夜间/弱光
+
+摄像头无红外。`nightvision.py`：`is_dark` 按整体亮度判暗 → `enhance_lowlight`（LAB 的 L 通道 CLAHE）增强后用于显示/录制/识别；夜间识别走「画面变化」（`MotionGrayDetector.present(..., night=True)` 跳过颜色门、只看运动）。`record_at_night=False` 则天黑直接不记录。极暗环境（房间全黑）增强也只能拉出轮廓，检测靠运动——可靠性有限，碗边放个小夜灯会显著改善。
+
+## Scope (MVP 已知边界)
+
+会把"好奇凑近没喝"误计 —— 这是**有意为之**：先用简单模型多录候选，靠网页标注 + 一键训练分类器逐步修正。隐私时段自动关闭、网页画框选区域、开机自启均为后续阶段。设计与计划见 `docs/superpowers/`。
