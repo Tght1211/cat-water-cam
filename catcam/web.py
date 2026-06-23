@@ -175,7 +175,17 @@ main{padding:30px 0 90px}
 .thumb .dur-badge{position:absolute;right:9px;bottom:9px;background:rgba(0,0,0,.62);color:#fff;
   border-radius:7px;padding:3px 8px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.thumb .time-badge{position:absolute;left:9px;bottom:9px;background:rgba(0,0,0,.62);color:#fff;
+  border-radius:7px;padding:3px 8px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
 .thumb video{width:100%;height:100%;display:block;background:#000;object-fit:cover}
+/* 视频时间线分组 + 滚动分页 */
+.day-head{grid-column:1/-1;display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;color:var(--ink);margin:16px 2px 0}
+.day-head:first-child{margin-top:0}
+.day-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(0,113,227,.15)}
+.day-n{font-size:12px;font-weight:600;color:var(--muted);background:var(--bg);border:1px solid var(--line);padding:2px 9px;border-radius:980px}
+.clip-more{grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;font-weight:600;padding:18px;border:1px dashed var(--line);border-radius:14px;cursor:pointer;margin-top:8px;transition:.15s}
+.clip-more:hover{color:var(--accent);border-color:var(--accent)}
 .meta{padding:13px 15px 15px;display:flex;flex-direction:column;gap:11px}
 .meta .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .fname{font-size:11px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -421,43 +431,77 @@ async function renderTrend(){
 }
 function setRange(d,btn){trendDays=d;for(const b of $('#rangeCtl').children)b.classList.toggle('on',b===btn);renderTrend();}
 
-/* 视频：懒加载缩略图，点开才载入对应视频 */
-let clipFilter='all', clipsData=null;
+/* 视频：按时间线（今天/昨天/日期）分组 + 下滑滚动分页；懒加载缩略图，点开才载入视频 */
+let clipFilter='all', clipsData=null, clipPage=1, clipObserver=null;
+const CLIP_PAGE=12;
 async function loadClips(){
+  clipPage=1;
   clipsData=await (await fetch('/api/clips')).json();
   renderClips();
 }
 function statusHtml(v){return v===true?`<span class="status s-yes"><i></i>真喝水</span>`
   :v===false?`<span class="status s-no"><i></i>没喝</span>`:`<span class="status s-none"><i></i>未标注</span>`;}
+function clipTime(name){const m=String(name).match(/clip_(\\d+)/);return m?new Date(parseInt(m[1],10)):null;}
+function dayKey(d){return d?`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`:'?';}
+function dayLabel(d){
+  if(!d)return '未知时间';
+  const now=new Date(),a=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  const b=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  const diff=Math.round((a-b)/86400000);
+  if(diff===0)return '今天'; if(diff===1)return '昨天';
+  return `${d.getMonth()+1} 月 ${d.getDate()} 日`;
+}
+function hhmmss(d){const p=n=>String(n).padStart(2,'0');return d?`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`:'';}
+function filteredClips(){
+  const lab=clipsData.labels||{};
+  return clipsData.clips.filter(n=>{const v=lab[n];
+    return clipFilter==='all'||(clipFilter==='none'&&v==null)||(clipFilter==='yes'&&v===true)||(clipFilter==='no'&&v===false);});
+}
+function clipCard(n){
+  const lab=clipsData.labels||{},dur=clipsData.durations||{},pr=clipsData.predictions||{};
+  const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),pred=pr[n],t=clipTime(n);
+  const dtxt=d?`<span class="dur-badge">${d.toFixed(1)} 秒</span>`:'';
+  const tbadge=t?`<span class="time-badge">${hhmmss(t)}</span>`:'';
+  const predLine=(pred===undefined)?'':`<div class="mpredline"><span class="mpred ${pred?'y':'n'}">模型：${pred?'真喝水':'没喝'}</span></div>`;
+  return `<div class="clip" data-name="${en}">
+    <div class="thumb" onclick='playClip(this,${jn})'>
+      <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
+      <button class="play" aria-label="播放">${I.play}</button>${tbadge}${dtxt}</div>
+    <div class="meta">
+      <div class="top"><span class="fname">${en}</span>${statusHtml(v)}</div>${predLine}
+      <div class="seg">
+        <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
+        <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
+      </div>
+      <a class="dl" href="/clips/${encodeURIComponent(n)}" download>${I.dl}下载</a>
+    </div></div>`;
+}
 function renderClips(){
   if(!clipsData)return;
-  const lab=clipsData.labels||{},dur=clipsData.durations||{},pr=clipsData.predictions||{},box=$('#clips');
+  const box=$('#clips');
   if(!clipsData.clips.length){box.innerHTML=`<div class="empty">${I.cam}<div>还没有视频。接上摄像头跑 <code>python -m catcam</code>，猫在水碗停留就会自动录制。</div></div>`;return;}
-  const items=clipsData.clips.filter(n=>{const v=lab[n];
-    return clipFilter==='all'||(clipFilter==='none'&&v==null)||(clipFilter==='yes'&&v===true)||(clipFilter==='no'&&v===false);});
+  const items=filteredClips();
   if(!items.length){box.innerHTML='<div class="empty">这个筛选下没有视频</div>';return;}
-  box.innerHTML=items.map(n=>{
-    const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),pred=pr[n];
-    const dtxt=d?`<span class="dur-badge">${d.toFixed(1)} 秒</span>`:'';
-    const predLine=(pred===undefined)?'':`<div class="mpredline"><span class="mpred ${pred?'y':'n'}">模型：${pred?'真喝水':'没喝'}</span></div>`;
-    return `<div class="clip" data-name="${en}">
-      <div class="thumb" onclick='playClip(this,${jn})'>
-        <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
-        <button class="play" aria-label="播放">${I.play}</button>${dtxt}</div>
-      <div class="meta">
-        <div class="top"><span class="fname">${en}</span>${statusHtml(v)}</div>${predLine}
-        <div class="seg">
-          <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
-          <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
-        </div>
-        <a class="dl" href="/clips/${encodeURIComponent(n)}" download>${I.dl}下载</a>
-      </div></div>`;
-  }).join('');
+  const dayCounts={}; items.forEach(n=>{const k=dayKey(clipTime(n));dayCounts[k]=(dayCounts[k]||0)+1;});
+  const shown=items.slice(0,clipPage*CLIP_PAGE);
+  let html='',lastDay=null;
+  shown.forEach(n=>{const d=clipTime(n),k=dayKey(d);
+    if(k!==lastDay){lastDay=k;html+=`<div class="day-head"><span class="day-dot"></span>${dayLabel(d)}<span class="day-n">${dayCounts[k]} 段</span></div>`;}
+    html+=clipCard(n);});
+  const remaining=items.length-shown.length;
+  if(remaining>0)html+=`<div class="clip-more" id="clipSentinel" onclick="clipPage++;renderClips()">下滑加载更多 · 还有 ${remaining} 段</div>`;
+  box.innerHTML=html;
+  if(clipObserver)clipObserver.disconnect();
+  const s=$('#clipSentinel');
+  if(s&&'IntersectionObserver' in window){
+    clipObserver=new IntersectionObserver(es=>{if(es[0].isIntersecting){clipPage++;renderClips();}},{rootMargin:'300px'});
+    clipObserver.observe(s);
+  }
 }
 function playClip(thumb,name){
   thumb.innerHTML=`<video src="/clips/${encodeURIComponent(name)}" controls autoplay playsinline></video>`;
 }
-function setFilter(f,btn){clipFilter=f;$$('.fchip').forEach(b=>b.classList.toggle('on',b===btn));renderClips();}
+function setFilter(f,btn){clipFilter=f;clipPage=1;$$('.fchip').forEach(b=>b.classList.toggle('on',b===btn));renderClips();}
 async function fb(clip,is){
   await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({clip,is_drinking:is})});
