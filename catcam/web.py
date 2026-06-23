@@ -118,6 +118,17 @@ main{padding:30px 0 90px}
 .chip{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:5px 11px;
   font-size:12px;font-variant-numeric:tabular-nums}
 .times-empty{color:var(--muted);font-size:13px;margin-top:12px}
+/* 今日时间线（24 小时横轴） */
+.timeline{position:relative;height:76px;margin:4px 7px 0}
+.tl-track{position:absolute;left:0;right:0;top:30px;height:5px;background:var(--bg);border:1px solid var(--line);border-radius:4px}
+.tl-tick{position:absolute;top:24px;transform:translateX(-50%)}
+.tl-tick i{display:block;width:1px;height:11px;background:var(--line);margin:0 auto}
+.tl-tick span{position:absolute;top:14px;left:50%;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.tl-now{position:absolute;top:22px;height:21px;width:2px;background:var(--red);border-radius:2px;transform:translateX(-50%)}
+.tl-now::after{content:"";position:absolute;top:-3px;left:50%;width:6px;height:6px;border-radius:50%;background:var(--red);transform:translateX(-50%)}
+.tl-dot{position:absolute;top:24px;width:15px;height:15px;border-radius:50%;background:var(--accent);border:3px solid var(--surface);transform:translateX(-50%);box-shadow:0 1px 5px rgba(0,0,0,.28);cursor:pointer;transition:transform .15s;z-index:2}
+.tl-dot:hover{transform:translateX(-50%) scale(1.3)}
+.tl-empty{color:var(--muted);font-size:13px;display:flex;align-items:center;height:100%}
 .today-foot{border-top:1px solid var(--line);padding-top:16px;margin-top:18px;color:var(--muted);font-size:13.5px}
 .today-foot b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;font-size:15px}
 
@@ -270,6 +281,8 @@ main{padding:30px 0 90px}
 <div class="today-foot" id="todayFoot"></div>
 </div></div>
 </div>
+<div class="card" style="margin-top:20px"><div class="card-h">今日时间线 <span id="tlNow" style="font-weight:400;text-transform:none;letter-spacing:0"></span></div>
+<div class="card-b"><div id="timeline" class="timeline"></div></div></div>
 </section>
 
 <!-- 趋势 -->
@@ -358,6 +371,7 @@ async function loadStats(){
   $('#times').innerHTML=s.times.length?s.times.map(x=>`<span class="chip">${esc(x)}</span>`).join('')
     :'<div class="times-empty">今天还没记录到喝水</div>';
   $('#kLast').textContent=s.times.length?s.times[s.times.length-1]:'—';
+  renderTimeline(s.times);
   try{
     const w=await (await fetch('/api/stats/range?days=7')).json();
     const wv=(w.days||[]).map(d=>d.count),wt=wv.reduce((a,b)=>a+b,0);
@@ -366,6 +380,20 @@ async function loadStats(){
   }catch(e){}
 }
 
+/* 今日时间线：24 小时横轴，标出每次喝水 + 当前时刻 */
+function hms2frac(t){const [h,m,s]=t.split(':').map(Number);return (h+(m||0)/60+(s||0)/3600)/24;}
+function renderTimeline(times){
+  const tl=$('#timeline'),now=new Date();
+  const p=n=>String(n).padStart(2,'0');
+  $('#tlNow').textContent=`现在 ${p(now.getHours())}:${p(now.getMinutes())}`;
+  if(!times||!times.length){tl.innerHTML='<div class="tl-empty">今天还没记录到喝水</div>';return;}
+  const nowFrac=(now.getHours()+now.getMinutes()/60+now.getSeconds()/3600)/24;
+  const ticks=[0,3,6,9,12,15,18,21,24].map(h=>
+    `<div class="tl-tick" style="left:${(h/24*100).toFixed(2)}%"><i></i><span>${h}:00</span></div>`).join('');
+  const dots=times.map(t=>`<div class="tl-dot" style="left:${(hms2frac(t)*100).toFixed(2)}%" title="${esc(t)}"></div>`).join('');
+  const nowLine=`<div class="tl-now" style="left:${(nowFrac*100).toFixed(2)}%"></div>`;
+  tl.innerHTML=`<div class="tl-track"></div>${ticks}${nowLine}${dots}`;
+}
 /* 趋势图（原生 SVG，Apple Health 风） */
 let trendDays=7;
 function drawChart(box,pts){
