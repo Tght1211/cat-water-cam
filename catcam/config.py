@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict, fields
+from dataclasses import dataclass, asdict, field, fields
 from pathlib import Path
 
 
@@ -56,7 +56,10 @@ class Config:
     ai_label_enabled: bool = False
     ai_base_url: str = "https://openrouter.ai/api/v1"
     ai_api_key: str = ""                              # OpenRouter key，写在 config.json（已 gitignore）
-    ai_model: str = "google/gemma-4-31b-it:free"
+    ai_model: str = "google/gemma-4-31b-it:free"      # 主模型
+    # 兜底/轮换模型：连同主模型一起组成模型池，每次调用轮换起始模型（分摊各免费模型额度），
+    # 某个失败（限流/报错）就顺位换下一个，全失败才算这段标注失败。都要支持视觉输入。
+    ai_fallback_models: list[str] = field(default_factory=list)
     ai_label_frames: int = 3                          # 每段送几帧给模型
 
     # 夜间/弱光（此摄像头无红外）：整体亮度低于阈值算「暗」，暗帧做弱光增强后

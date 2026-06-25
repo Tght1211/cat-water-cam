@@ -104,10 +104,16 @@ python3 -m venv .venv
 "ai_base_url": "https://openrouter.ai/api/v1",
 "ai_api_key": "你的-key",
 "ai_model": "google/gemma-4-31b-it:free",
+"ai_fallback_models": [
+  "nvidia/nemotron-nano-12b-v2-vl:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+],
 "ai_label_frames": 3
 ```
 
 - **接口**：走 OpenAI 兼容协议，`ai_base_url` 可指向 OpenRouter、其它兼容服务、或本地代理（如 gpt-load）。需选**支持视觉输入**的模型。
+- **多模型轮换 + 兜底**：`ai_model` 是主模型，`ai_fallback_models` 列额外模型，一起组成模型池。**每次调用轮换起始模型**（分摊各免费模型的每日额度，少撞 429），**某个失败就顺位换下一个**，全池都失败才算这段标注失败。免费模型限流严重时，多配几个能明显提升成功率。
 - **怎么工作**：录完一段 → 后台抽 `ai_label_frames` 帧 → 问模型「猫是否真喝水」→ 拿到 `{喝/没喝, 置信度, 理由}` 直接写标注并进训练集。视频页会显示来源徽标 🤖 AI（含置信度/理由）/ ✋ 人工。
 - **稳**：调用失败（限流/网络/解析失败）只记日志、该段保持未标注，**绝不影响录制**。免费模型常有每日额度/限流（429），到时那段就先空着，可重录或手动标，或换自己的付费 key / 别的模型。
 - **隐私/网络**：若机器走了 VPN（SOCKS 代理），程序已设 `trust_env=False` 直连，不被系统代理影响。

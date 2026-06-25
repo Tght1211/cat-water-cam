@@ -91,13 +91,49 @@ def test_label_writes_ai_label_and_training_frames(tmp_path):
     assert list((tmp_path / "training" / "drinking").glob("*.jpg"))
 
 
-def test_label_retries_once_on_error(tmp_path):
+class _ModelAwareClient:
+    """记录每次调用的 model；对 bad_models 里的模型抛错（模拟限流/故障）。"""
+    def __init__(self, content, bad_models=()):
+        self._content = content; self._bad = set(bad_models); self.models_called = []
+        self.chat = type("Chat", (), {"completions": self})()
+    def create(self, **kw):
+        m = kw.get("model"); self.models_called.append(m)
+        if m in self._bad:
+            raise RuntimeError(f"429 {m}")
+        return _FakeResp(self._content)
+
+
+def test_label_falls_back_to_next_model(tmp_path):
     clip = tmp_path / "b.mp4"; _make_clip(clip)
     store = _store(tmp_path)
-    client = _FakeClient('{"drinking": false}', fail_times=1)
-    lab = AILabeler(store, tmp_path / "training", "m", frames=3, client=client, sleep=lambda s: None)
+    client = _ModelAwareClient('{"drinking": false}', bad_models=["bad"])
+    lab = AILabeler(store, tmp_path / "training", ["bad", "good"], frames=3,
+                    client=client, sleep=lambda s: None)
     out = lab.label(clip)
-    assert client.calls == 2 and out["drinking"] is False
+    assert out["drinking"] is False
+    assert client.models_called == ["bad", "good"]  # 先试 bad 失败、顺位换 good 成功
+
+
+def test_label_rotates_start_model_across_calls(tmp_path):
+    store = _store(tmp_path)
+    client = _ModelAwareClient('{"drinking": true}')  # 都成功
+    lab = AILabeler(store, tmp_path / "training", ["a", "b"], frames=3,
+                    client=client, sleep=lambda s: None)
+    for i in range(2):
+        c = tmp_path / f"r{i}.mp4"; _make_clip(c); lab.label(c)
+    # 第一次从 a 起、第二次轮换到 b 起 → 分摊各模型额度
+    assert client.models_called == ["a", "b"]
+
+
+def test_label_raises_when_all_models_fail(tmp_path):
+    clip = tmp_path / "d.mp4"; _make_clip(clip)
+    store = _store(tmp_path)
+    client = _ModelAwareClient('{"drinking": false}', bad_models=["x", "y"])
+    lab = AILabeler(store, tmp_path / "training", ["x", "y"], frames=3,
+                    client=client, sleep=lambda s: None)
+    with pytest.raises(RuntimeError):
+        lab.label(clip)
+    assert store.label_source("d.mp4") is None  # 全失败 → 该段未标注
 
 
 def test_label_skips_human_labeled(tmp_path):

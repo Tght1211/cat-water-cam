@@ -10,6 +10,7 @@ import base64
 import json
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -78,12 +79,15 @@ class AILabeler:
                  train_frames=5, sleep=time.sleep, log=print):
         self.store = store
         self.training_dir = Path(training_dir)
-        self.model = model
+        # model 可传单个字符串或一组模型；组成「模型池」做轮换 + 兜底。
+        self.models = [model] if isinstance(model, str) else [m for m in model if m]
         self.frames = frames
         self.client = client
         self.train_frames = train_frames
         self.sleep = sleep
         self.log = log
+        self._rr = 0                       # 轮换起始下标
+        self._rr_lock = threading.Lock()
 
     @classmethod
     def from_config(cls, store, cfg):
@@ -96,18 +100,30 @@ class AILabeler:
         # 走系统 SOCKS 代理反而会因缺 socksio 直接崩、或把本地请求绕进隧道——直连才对。
         client = OpenAI(base_url=cfg.ai_base_url, api_key=cfg.ai_api_key,
                         http_client=httpx.Client(trust_env=False))
-        return cls(store, cfg.training_dir, cfg.ai_model, frames=cfg.ai_label_frames, client=client)
+        # 主模型 + 兜底模型组成池（去重保序）。
+        models, seen = [], set()
+        for m in [cfg.ai_model, *getattr(cfg, "ai_fallback_models", [])]:
+            if m and m not in seen:
+                seen.add(m)
+                models.append(m)
+        return cls(store, cfg.training_dir, models, frames=cfg.ai_label_frames, client=client)
 
     def _call(self, messages) -> str:
+        """在模型池里轮换起始、顺位兜底：每次换个起点分摊额度，某个失败就试下一个，全失败才抛。"""
+        n = len(self.models)
+        with self._rr_lock:
+            start = self._rr
+            self._rr = (self._rr + 1) % n
         last = None
-        for attempt in range(2):  # 一次 429 退避重试
+        for i in range(n):
+            model = self.models[(start + i) % n]
             try:
-                resp = self.client.chat.completions.create(model=self.model, messages=messages)
+                resp = self.client.chat.completions.create(model=model, messages=messages)
                 return resp.choices[0].message.content
             except Exception as e:  # noqa: BLE001
                 last = e
-                if attempt == 0:
-                    self.sleep(2)
+                if i < n - 1:
+                    self.log(f"模型 {model} 调用失败（{e}），换下一个")
         raise last
 
     def label(self, clip_path) -> dict | None:
