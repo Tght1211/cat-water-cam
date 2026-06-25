@@ -9,6 +9,7 @@ import cv2
 import uvicorn
 
 from catcam.classifier import ActiveModel, DrinkingClassifier
+from catcam.ai_labeler import AILabeler
 from catcam.config import load_config
 from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
@@ -93,6 +94,9 @@ def main(config_path: str = "config.json") -> None:
     stats = StatsStore(cfg.db_path)
     recorder = ClipRecorder(cfg.clips_dir, cfg.max_clips, cfg.fps)
     feedback = FeedbackStore(cfg.db_path, cfg.training_dir)
+    ai_labeler = AILabeler.from_config(feedback, cfg)  # 未启用/缺 key 返回 None
+    if ai_labeler is not None:
+        print(f"AI 自动标注已开启 → {cfg.ai_model}（⚠️ 画面帧会上传外部服务器）")
     emailer = Emailer(cfg)
     registry = ModelRegistry(cfg.models_dir / "registry.json")
     active_model = ActiveModel()
@@ -185,6 +189,17 @@ def main(config_path: str = "config.json") -> None:
             daemon=True,
         ).start()
 
+    def _ai_label_async(clip_name: str) -> None:
+        # 调外部 API，放后台线程绝不阻塞采集；失败只记日志、该段保持未标注。
+        if ai_labeler is None:
+            return
+        def _run():
+            try:
+                ai_labeler.label(cfg.clips_dir / clip_name)
+            except Exception as e:  # noqa: BLE001
+                print(f"AI 标注失败（{clip_name}）：{e}")
+        threading.Thread(target=_run, daemon=True).start()
+
     # 采集线程：全速读相机 → 更新预览（网页流畅）；按 fps 节奏喂回放缓冲，
     # 会话录制也在这里按帧率写帧（writer fps 一致，播放速度才正确）。
     def _capture() -> None:
@@ -214,6 +229,7 @@ def main(config_path: str = "config.json") -> None:
                             predicted_by=active_model.active_id,
                         )
                         _email_async(res.timestamp, res.photo)
+                        _ai_label_async(res.clip_name)
 
     threading.Thread(target=_capture, daemon=True).start()
 
