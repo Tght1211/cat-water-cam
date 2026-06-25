@@ -131,7 +131,9 @@ ai_label_frames: int = 3                             # 每段送几帧给模型
 
 - ⚠️ 开启后 **猫的画面帧会上传到 OpenRouter 外部服务器**，违背项目「视频/画面只在本机与局域网内
   流转」的核心原则。因此 **默认关闭，需用户在 config.json 显式开启**，并在文档/CLAUDE.md 注明。
-- key 已明文出现在聊天记录中，建议接通后到 OpenRouter 后台轮换。
+- 本部署经用户本机代理访问（`ai_base_url=http://localhost:3001/proxy/openrouter/v1`），代理再转发到
+  OpenRouter——画面帧最终仍出本机，隐私警示不变。代理地址 + key 放 `config.json`（gitignore），代码默认值保持通用。
+- key 已明文出现在聊天记录中，建议接通后轮换。
 - 免费模型有每日额度，超额标注失败（不影响录制）。测试期用，模型训好后关闭即可。
 
 ## 验收标准
