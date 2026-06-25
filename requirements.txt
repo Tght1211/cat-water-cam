@@ -5,3 +5,4 @@ uvicorn>=0.27
 numpy>=1.24
 pytest>=8.0
 httpx>=0.27
+openai

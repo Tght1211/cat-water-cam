@@ -62,6 +62,12 @@ python3 -m venv .venv
   - **教训**：早先把分类器当 `AND` 门（`cat_in_roi AND confirm()`），一个偏科模型（5👍/80👎 训出来、几乎全判「没喝」）直接把录制全掐死。模型还在迭代时**绝不能让它否决兜底**。`Pipeline.cat_in_bowl` 现在调 `active_model.gate(frame)`；shadow 恒 True。出错 fail-open。
   - 模式持久化在 registry（`active_mode`），网页 `/api/model/activate {id,mode}` 热切换；视频列表显示模型对每段的判断（`/api/clips` 的 `predictions`）。
 - **标注状态 / 避免重复训练**：`labels` 表加了 `trained_version` 列（NULL=已标注未训练）。`FeedbackStore.label_states()` 给出 待标注（靠 web 比对当前 clips）/ 已标注未训练 / 已标注已训练 + 👍👎 计数；训练完 `mark_trained(version)` 把当前标注全标为已训练。`/api/train` 在「无新标注」时拒绝，避免重复无效训练。改标注会把 `trained_version` 清回 NULL（数据变了 = 又得练）。
+- **AI 自动标注（可选、默认关）**：`ai_labeler.py` 的 `AILabeler` 在会话录完后台调外部视觉大模型
+  （OpenRouter / OpenAI 兼容，`ai_base_url`/`ai_api_key`/`ai_model` 可配）判「喝/没喝」，直接写
+  `labels`（`source='ai'` + 置信度 + 理由）并抽帧进 `data/training`。**⚠️ 开启后画面帧会上传外部服务器**，
+  与「画面只在本机/局域网」原则冲突——`ai_label_enabled` 默认 False，需显式开。失败 fail-open（只记日志、
+  该段保持未标注，不影响录制）。人工 > AI：已人工标注的段不被覆盖。训练侧 `prepare_dataset(balance=True)`
+  对 train 划分做类别平衡（多数类降采样），val 保持真实分布。
 
 ## Conventions / gotchas
 
