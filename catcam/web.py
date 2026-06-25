@@ -530,6 +530,10 @@ async function fb(clip,is){
     // 局部更新该卡片：不重建整个网格，避免打断其它正在播放的视频
     const card=$(`.clip[data-name="${CSS.escape(clip)}"]`);
     if(card){card.querySelector('.status').outerHTML=statusHtml(is);
+      // 人工翻转 → 来源徽标也改成「✋ 人工」（原来可能是 🤖 AI 或没有），别让旧徽标留着
+      const human='<span class="src-badge human">✋ 人工</span>';
+      const sb=card.querySelector('.src-badge');
+      if(sb){sb.outerHTML=human;}else{const st=card.querySelector('.status');if(st)st.insertAdjacentHTML('afterend',human);}
       const y=card.querySelector('.seg .yes'),no=card.querySelector('.seg .no');
       y.classList.toggle('on',is===true);no.classList.toggle('on',is===false);
       if(clipFilter!=='all'){const keep=(clipFilter==='yes'&&is===true)||(clipFilter==='no'&&is===false);

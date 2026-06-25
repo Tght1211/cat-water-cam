@@ -65,8 +65,9 @@ def prepare_dataset(training_dir: Path, dataset_dir: Path, val_ratio: float = 0.
             (dataset_dir / split / c).mkdir(parents=True, exist_ok=True)
     if balance:
         target = balance_target({c: len(train_imgs[c]) for c in CLASSES})
-        for c in CLASSES:
-            train_imgs[c] = train_imgs[c][:target]  # 降采样到最小类（确定性取前 target 张）
+        if target > 0:  # 某类 train 为 0 时 target=0，别把另一类也清空成空训练集
+            for c in CLASSES:
+                train_imgs[c] = train_imgs[c][:target]  # 降采样到最小类（确定性取前 target 张）
     for c in CLASSES:
         for p in val_imgs[c]:
             shutil.copy(p, dataset_dir / "val" / c / p.name)

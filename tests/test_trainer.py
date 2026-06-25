@@ -67,3 +67,13 @@ def test_prepare_dataset_balances_train_keeps_val(tmp_path):
     n_val = lambda c: len(list((ds / "val" / c).glob("*.jpg")))
     assert n_train("drinking") == n_train("not_drinking") == 6
     assert n_val("drinking") == 2 and n_val("not_drinking") == 10
+
+
+def test_prepare_dataset_balance_skips_when_a_class_empty(tmp_path):
+    # 一类有图、另一类 0 张：balance 不应把有图那类也清空成空训练集
+    _seed(tmp_path, 5, 0)
+    ds = tmp_path / "ds_empty"
+    prepare_dataset(tmp_path, ds, val_ratio=0.25, balance=True)
+    n_train = lambda c: len(list((ds / "train" / c).glob("*.jpg")))
+    assert n_train("drinking") >= 1   # 没被 target=0 清空
+    assert n_train("not_drinking") == 0

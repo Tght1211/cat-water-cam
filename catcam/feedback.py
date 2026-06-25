@@ -52,6 +52,8 @@ class FeedbackStore:
                 conn.execute("ALTER TABLE labels ADD COLUMN trained_version TEXT")
             if "source" not in cols:
                 conn.execute("ALTER TABLE labels ADD COLUMN source TEXT")
+                # 老库已有的标注都是人工标的，回填 source='human'，让「人工 > AI 不覆盖」对历史段也成立。
+                conn.execute("UPDATE labels SET source='human' WHERE source IS NULL")
             if "confidence" not in cols:
                 conn.execute("ALTER TABLE labels ADD COLUMN confidence REAL")
             if "reason" not in cols:

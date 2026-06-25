@@ -73,3 +73,15 @@ def test_label_source_none_when_unlabeled(tmp_path):
     store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
     assert store.label_source("nope.mp4") is None
     assert store.label_meta("nope.mp4") is None
+
+
+def test_migration_backfills_source_human(tmp_path):
+    import sqlite3
+    db = tmp_path / "old.db"
+    # 模拟老库：labels 表没有 source 列，已有一条人工标注
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE labels (clip_name TEXT PRIMARY KEY, is_drinking INTEGER NOT NULL, ts REAL)")
+    con.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('old.mp4', 1, 1.0)")
+    con.commit(); con.close()
+    store = FeedbackStore(db, tmp_path / "training")  # 触发迁移 + 回填
+    assert store.label_source("old.mp4") == "human"

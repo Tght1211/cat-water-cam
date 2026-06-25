@@ -47,6 +47,9 @@ def parse_label(content: str) -> dict:
     if not m:
         raise ValueError(f"模型回复里找不到 JSON：{content!r}")
     obj = json.loads(m.group(0))
+    if "drinking" not in obj:
+        # 漏了 drinking 字段就当解析失败（抛错由调用方吞掉、该段不标），别静默写成「没喝」污染训练集。
+        raise ValueError(f"模型回复缺少 drinking 字段：{content!r}")
     drinking = obj.get("drinking")
     if isinstance(drinking, str):
         drinking = drinking.strip().lower() in ("true", "yes", "1", "喝", "drinking")

@@ -41,6 +41,12 @@ def test_parse_label_garbage_raises():
         parse_label("完全不是 json")
 
 
+def test_parse_label_missing_drinking_raises():
+    # 合法 JSON 但缺 drinking 字段 → 当解析失败，别静默写成「没喝」
+    with pytest.raises(ValueError):
+        parse_label('{"confidence": 0.5, "reason": "说不清"}')
+
+
 import numpy as np, cv2
 from catcam.ai_labeler import AILabeler
 from catcam.feedback import FeedbackStore
