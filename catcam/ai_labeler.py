@@ -58,3 +58,66 @@ def parse_label(content: str) -> dict:
         conf = None
     reason = str(obj.get("reason", "") or "")
     return {"drinking": drinking, "confidence": conf, "reason": reason}
+
+
+class AILabeler:
+    """录一段调一次：抽帧 → 送模型 → 解析 → 写标注（source='ai'）+ 抽帧进训练目录。
+
+    client 可注入（测试塞假 client）；失败抛异常由调用方吞掉记日志，绝不影响录制。
+    人工 > AI：已人工标注的段直接跳过、不覆盖。
+    """
+
+    def __init__(self, store, training_dir, model, frames=3, client=None,
+                 train_frames=5, sleep=time.sleep, log=print):
+        self.store = store
+        self.training_dir = Path(training_dir)
+        self.model = model
+        self.frames = frames
+        self.client = client
+        self.train_frames = train_frames
+        self.sleep = sleep
+        self.log = log
+
+    @classmethod
+    def from_config(cls, store, cfg):
+        """按 config 造一个真 client 的 AILabeler；未启用/缺 key 返回 None。"""
+        if not cfg.ai_label_enabled or not cfg.ai_api_key:
+            return None
+        from openai import OpenAI
+        client = OpenAI(base_url=cfg.ai_base_url, api_key=cfg.ai_api_key)
+        return cls(store, cfg.training_dir, cfg.ai_model, frames=cfg.ai_label_frames, client=client)
+
+    def _call(self, messages) -> str:
+        last = None
+        for attempt in range(2):  # 一次 429 退避重试
+            try:
+                resp = self.client.chat.completions.create(model=self.model, messages=messages)
+                return resp.choices[0].message.content
+            except Exception as e:  # noqa: BLE001
+                last = e
+                if attempt == 0:
+                    self.sleep(2)
+        raise last
+
+    def label(self, clip_path) -> dict | None:
+        clip_path = Path(clip_path)
+        if self.store.label_source(clip_path.name) == "human":
+            self.log(f"AI 跳过（已人工标注）：{clip_path.name}")
+            return None
+        with tempfile.TemporaryDirectory() as td:
+            frame_paths = extract_frames(clip_path, Path(td), self.frames)
+            if not frame_paths:
+                self.log(f"AI 跳过（抽帧为空）：{clip_path.name}")
+                return None
+            messages = build_messages(encode_frames(frame_paths))
+        content = self._call(messages)
+        result = parse_label(content)
+        self.store.label_clip(
+            clip_path, result["drinking"], max_frames=self.train_frames,
+            source="ai", confidence=result["confidence"], reason=result["reason"],
+        )
+        conf = result["confidence"]
+        conf_txt = f"{conf:.2f}" if isinstance(conf, float) else "—"
+        self.log(f"AI 标注 {clip_path.name}：{'喝水' if result['drinking'] else '没喝'}"
+                 f"（{conf_txt}）{result['reason']}")
+        return result
