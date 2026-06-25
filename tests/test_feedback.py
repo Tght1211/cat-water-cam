@@ -48,3 +48,28 @@ def test_relabel_overwrites(tmp_path):
 def test_get_label_none_when_unlabeled(tmp_path):
     store = FeedbackStore(db_path=tmp_path / "fb.db", training_dir=tmp_path / "train")
     assert store.get_label("nope.mp4") is None
+
+
+def test_ai_label_stores_source_meta(tmp_path):
+    clip = _make_clip(tmp_path)
+    store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    store.label_clip(clip, True, max_frames=3, source="ai", confidence=0.8, reason="舌头接触水面")
+    meta = store.label_meta(clip.name)
+    assert meta == {"is_drinking": True, "source": "ai", "confidence": 0.8, "reason": "舌头接触水面"}
+    assert store.label_source(clip.name) == "ai"
+    assert list((tmp_path / "training" / "drinking").glob("*.jpg"))
+
+
+def test_human_label_defaults_source_human(tmp_path):
+    clip = _make_clip(tmp_path)
+    store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    store.label_clip(clip, False)  # 不传 source → human
+    assert store.label_source(clip.name) == "human"
+    m = store.label_meta(clip.name)
+    assert m["source"] == "human" and m["confidence"] is None and m["reason"] is None
+
+
+def test_label_source_none_when_unlabeled(tmp_path):
+    store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    assert store.label_source("nope.mp4") is None
+    assert store.label_meta("nope.mp4") is None

@@ -50,20 +50,30 @@ class FeedbackStore:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(labels)")]
             if "trained_version" not in cols:
                 conn.execute("ALTER TABLE labels ADD COLUMN trained_version TEXT")
+            if "source" not in cols:
+                conn.execute("ALTER TABLE labels ADD COLUMN source TEXT")
+            if "confidence" not in cols:
+                conn.execute("ALTER TABLE labels ADD COLUMN confidence REAL")
+            if "reason" not in cols:
+                conn.execute("ALTER TABLE labels ADD COLUMN reason TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
 
-    def label_clip(self, clip_path: Path, is_drinking: bool, max_frames: int = 5) -> None:
+    def label_clip(
+        self, clip_path: Path, is_drinking: bool, max_frames: int = 5,
+        source: str = "human", confidence: float | None = None, reason: str | None = None,
+    ) -> None:
         clip_path = Path(clip_path)
         # 改标注 = 数据变了 → trained_version 清回 NULL，让它重新算「未训练」。
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO labels (clip_name, is_drinking, ts, trained_version) "
-                "VALUES (?, ?, ?, NULL) "
+                "INSERT INTO labels (clip_name, is_drinking, ts, trained_version, source, confidence, reason) "
+                "VALUES (?, ?, ?, NULL, ?, ?, ?) "
                 "ON CONFLICT(clip_name) DO UPDATE SET "
-                "is_drinking=excluded.is_drinking, ts=excluded.ts, trained_version=NULL",
-                (clip_path.name, 1 if is_drinking else 0, time.time()),
+                "is_drinking=excluded.is_drinking, ts=excluded.ts, trained_version=NULL, "
+                "source=excluded.source, confidence=excluded.confidence, reason=excluded.reason",
+                (clip_path.name, 1 if is_drinking else 0, time.time(), source, confidence, reason),
             )
         sub = "drinking" if is_drinking else "not_drinking"
         extract_frames(clip_path, self.training_dir / sub, max_frames)
@@ -77,6 +87,26 @@ class FeedbackStore:
         if row is None:
             return None
         return bool(row[0])
+
+    def label_source(self, clip_name: str) -> str | None:
+        """该段标注来源：'human' / 'ai' / None（未标注）。AILabeler 用它实现「人工 > AI」。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT source FROM labels WHERE clip_name = ?", (clip_name,)
+            ).fetchone()
+        return None if row is None else row[0]
+
+    def label_meta(self, clip_name: str) -> dict | None:
+        """该段标注的完整元信息，供视频页显示来源徽标；未标注返回 None。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT is_drinking, source, confidence, reason FROM labels WHERE clip_name = ?",
+                (clip_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"is_drinking": bool(row[0]), "source": row[1],
+                "confidence": row[2], "reason": row[3]}
 
     def label_states(self) -> dict:
         """标注数据的各状态计数，供训练页展示、避免重复训练。"""
