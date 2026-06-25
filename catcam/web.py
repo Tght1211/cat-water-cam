@@ -175,6 +175,9 @@ main{padding:30px 0 90px}
 .thumb .dur-badge{position:absolute;right:9px;bottom:9px;background:rgba(0,0,0,.62);color:#fff;
   border-radius:7px;padding:3px 8px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.src-badge{display:inline-block;margin-left:6px;font-size:11px;padding:1px 7px;border-radius:8px;vertical-align:middle}
+.src-badge.ai{background:rgba(10,132,255,.12);color:var(--accent)}
+.src-badge.human{background:var(--line);color:var(--muted)}
 .thumb .time-badge{position:absolute;left:9px;bottom:9px;background:rgba(0,0,0,.62);color:#fff;
   border-radius:7px;padding:3px 8px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
@@ -223,6 +226,16 @@ main{padding:30px 0 90px}
 .btn:hover{opacity:.92} .btn:active{transform:scale(.97)}
 .btn:disabled{opacity:.5;cursor:default}
 .t-status{margin-top:14px;color:var(--muted);font-size:13.5px;min-height:18px}
+.t-prog{margin-top:14px}
+.t-prog .t-line{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:13px;color:var(--muted);margin-bottom:7px}
+.t-prog .t-line b{color:var(--ink);font-size:14px;font-variant-numeric:tabular-nums}
+.t-bar{height:8px;border-radius:6px;background:var(--line);overflow:hidden}
+.t-bar>i{display:block;height:100%;border-radius:6px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));
+  transition:width .5s ease}
+.t-bar.indet>i{width:35%!important;animation:tIndet 1.2s ease-in-out infinite}
+@keyframes tIndet{0%{margin-left:-35%}100%{margin-left:100%}}
 .lab-stat{display:flex;gap:14px;margin-bottom:14px}
 .lab-stat .box{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
 .lab-stat .n{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
@@ -336,6 +349,10 @@ main{padding:30px 0 90px}
 （用 <code>data/training</code> 下所有抽帧，产出 vN 版本与验证集准确率）。已训练过、没有新标注就不会重复练。</p>
 <button id="trainBtn" class="btn" onclick="train()">开始训练</button>
 <div class="t-status" id="trainStatus"></div>
+<div class="t-prog" id="trainProg" style="display:none">
+<div class="t-line"><span id="tpLabel"></span><b id="tpEta"></b></div>
+<div class="t-bar" id="tpBar"><i></i></div>
+</div>
 </div></div>
 <div class="card"><div class="card-h">当前生效模型</div><div class="card-b">
 <div id="activeBox"></div>
@@ -458,8 +475,11 @@ function filteredClips(){
     return clipFilter==='all'||(clipFilter==='none'&&v==null)||(clipFilter==='yes'&&v===true)||(clipFilter==='no'&&v===false);});
 }
 function clipCard(n){
-  const lab=clipsData.labels||{},dur=clipsData.durations||{},pr=clipsData.predictions||{};
-  const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),pred=pr[n],t=clipTime(n);
+  const lab=clipsData.labels||{},dur=clipsData.durations||{},pr=clipsData.predictions||{},mt=clipsData.meta||{};
+  const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),pred=pr[n],t=clipTime(n),m=mt[n];
+  const srcBadge=!m?'':(m.source==='ai'
+    ? `<span class="src-badge ai" title="${esc(m.reason||'')}">🤖 AI ${m.confidence!=null?m.confidence.toFixed(2):''}</span>`
+    : `<span class="src-badge human">✋ 人工</span>`);
   const dtxt=d?`<span class="dur-badge">${d.toFixed(1)} 秒</span>`:'';
   const tbadge=t?`<span class="time-badge">${hhmmss(t)}</span>`:'';
   const predLine=(pred===undefined)?'':`<div class="mpredline"><span class="mpred ${pred?'y':'n'}">模型：${pred?'真喝水':'没喝'}</span></div>`;
@@ -468,7 +488,7 @@ function clipCard(n){
       <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
       <button class="play" aria-label="播放">${I.play}</button>${tbadge}${dtxt}</div>
     <div class="meta">
-      <div class="top"><span class="fname">${en}</span>${statusHtml(v)}</div>${predLine}
+      <div class="top"><span class="fname">${en}</span>${statusHtml(v)}${srcBadge}</div>${predLine}
       <div class="seg">
         <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
         <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
@@ -506,6 +526,7 @@ async function fb(clip,is){
   await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({clip,is_drinking:is})});
   if(clipsData){clipsData.labels[clip]=is;
+    if(clipsData.meta)clipsData.meta[clip]={is_drinking:is,source:'human',confidence:null,reason:null};
     // 局部更新该卡片：不重建整个网格，避免打断其它正在播放的视频
     const card=$(`.clip[data-name="${CSS.escape(clip)}"]`);
     if(card){card.querySelector('.status').outerHTML=statusHtml(is);
@@ -527,6 +548,25 @@ async function train(){
 function fmtAcc(a){return (typeof a==='number')?(a*100).toFixed(1)+'%':'—';}
 function fmtTime(ts){if(!ts)return '';const d=new Date(ts*1000);
   const p=n=>String(n).padStart(2,'0');return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;}
+function fmtEta(sec){if(sec==null||!isFinite(sec))return '';sec=Math.max(0,Math.round(sec));
+  if(sec<60)return `约 ${sec} 秒`;const m=Math.floor(sec/60),s=sec%60;
+  return s?`约 ${m} 分 ${s} 秒`:`约 ${m} 分`;}
+function renderProg(s){
+  const box=$('#trainProg');box.style.display='block';
+  const bar=$('#tpBar'),fill=bar.querySelector('i');
+  if(s.phase==='training'&&s.total_epochs){
+    bar.classList.remove('indet');
+    const pct=Math.round((s.progress||0)*100);
+    fill.style.width=pct+'%';
+    $('#tpLabel').textContent=`训练中 · 第 ${s.epoch||0}/${s.total_epochs} 轮`;
+    const eta=fmtEta(s.eta_seconds);
+    $('#tpEta').textContent=eta?`剩余 ${eta} · ${pct}%`:`${pct}%`;
+  }else{
+    bar.classList.add('indet');fill.style.width='35%';
+    $('#tpLabel').textContent='准备中 · 下载基座权重 / 整理样本…';
+    $('#tpEta').textContent='';
+  }
+}
 async function pollTrain(){
   const s=await (await fetch('/api/train/status')).json();
   const ls=s.label_states||{labeled:0,drinking:0,not_drinking:0,untrained:0,trained:0};
@@ -537,9 +577,11 @@ async function pollTrain(){
   const btn=$('#trainBtn'),st=$('#trainStatus');
   const enough=ic.drinking>=4&&ic.not_drinking>=4;
   if(s.state==='running'){btn.disabled=true;st.textContent=s.detail||'训练中…';
-    if(!trainTimer)trainTimer=setInterval(pollTrain,3000);}
+    renderProg(s);
+    if(!trainTimer)trainTimer=setInterval(pollTrain,1500);}
   else{
     if(trainTimer){clearInterval(trainTimer);trainTimer=null;}
+    $('#trainProg').style.display='none';
     if(!enough){btn.disabled=true;st.textContent=`样本不够：每类至少 4 张抽帧（👍${ic.drinking} / 👎${ic.not_drinking}）`;}
     else if(ls.untrained===0&&ls.trained>0){btn.disabled=true;st.textContent='暂无新标注，无需重复训练';}
     else{btn.disabled=false;st.textContent=s.state==='done'?(s.detail||''):(ls.untrained>0?`有 ${ls.untrained} 段新标注可训练`:'');}
@@ -698,7 +740,9 @@ def create_app(
         durations = {n: clip_duration(clips_dir / n) for n in names}
         preds = stats.clip_predictions()
         predictions = {n: preds[n] for n in names if n in preds}  # 测试模型对该段的判断
-        return {"clips": names, "labels": labels, "durations": durations, "predictions": predictions}
+        meta = {n: feedback.label_meta(n) for n in names}         # 标注来源/置信度/理由
+        return {"clips": names, "labels": labels, "durations": durations,
+                "predictions": predictions, "meta": meta}
 
     @app.get("/clips/{name}/thumb.jpg")
     def clip_thumb(name: str):

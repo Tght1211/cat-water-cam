@@ -101,3 +101,16 @@ def test_clips_list_is_newest_first(tmp_path):
     client = TestClient(app)
     clips = client.get("/api/clips").json()["clips"]
     assert clips == ["clip_3000.mp4", "clip_2000.mp4", "clip_1000.mp4"]
+
+
+def test_clips_includes_label_meta(tmp_path):
+    app, _, recorder, feedback = _build(tmp_path)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    recorder.save_clip([frame], timestamp=1.0)
+    feedback.label_clip(recorder.clips_dir / "clip_1000.mp4", True,
+                        source="ai", confidence=0.8, reason="舔水")
+    client = TestClient(app)
+    body = client.get("/api/clips").json()
+    assert "meta" in body
+    m = body["meta"]["clip_1000.mp4"]
+    assert m["source"] == "ai" and m["reason"] == "舔水" and m["is_drinking"] is True
