@@ -26,7 +26,7 @@ class Config:
     record_session: bool = True
     preroll_seconds: float = 3.0          # 触发前补录这么久（猫凑近的过程）
     session_end_grace_seconds: float = 3.0  # 猫离开持续这么久才算结束、收尾存盘
-    max_session_seconds: float = 90.0      # 单段封顶，防卡死无限录
+    max_session_seconds: float = 15.0      # 单段封顶，防卡死无限录；超过 15s 没有更多信息量
     yolo_model: str = "yolov8n.pt"
     cat_confidence: float = 0.4
     data_dir: str = "data"
@@ -50,6 +50,14 @@ class Config:
     cls_base_model: str = "yolov8n-cls.pt"
     train_epochs: int = 15
     train_imgsz: int = 96
+
+    # AI 自动标注（外部视觉大模型，OpenRouter / OpenAI 兼容）：录一段自动判「喝/没喝」直接进训练。
+    # ⚠️ 开启后猫的画面帧会上传到外部服务器，违背「画面只在本机/局域网」原则——默认关，需显式开。
+    ai_label_enabled: bool = False
+    ai_base_url: str = "https://openrouter.ai/api/v1"
+    ai_api_key: str = ""                              # OpenRouter key，写在 config.json（已 gitignore）
+    ai_model: str = "google/gemma-4-31b-it:free"
+    ai_label_frames: int = 3                          # 每段送几帧给模型
 
     # 夜间/弱光（此摄像头无红外）：整体亮度低于阈值算「暗」，暗帧做弱光增强后
     # 用「画面变化」识别行为。record_at_night=False 则天黑直接不记录。

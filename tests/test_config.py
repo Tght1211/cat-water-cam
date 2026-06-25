@@ -36,3 +36,24 @@ def test_load_config_reads_existing_overrides(tmp_path):
     assert c.dwell_seconds == 2.0
     # 未指定字段用默认
     assert c.fps == 10
+
+
+def test_ai_label_defaults(tmp_path):
+    cfg = load_config(tmp_path / "config.json")
+    assert cfg.ai_label_enabled is False
+    assert cfg.ai_base_url == "https://openrouter.ai/api/v1"
+    assert cfg.ai_api_key == ""
+    assert cfg.ai_model == "google/gemma-4-31b-it:free"
+    assert cfg.ai_label_frames == 3
+
+
+def test_ai_label_roundtrip(tmp_path):
+    p = tmp_path / "config.json"
+    load_config(p)  # 生成默认
+    raw = json.loads(p.read_text())
+    raw["ai_label_enabled"] = True
+    raw["ai_api_key"] = "sk-test"
+    p.write_text(json.dumps(raw))
+    cfg = load_config(p)
+    assert cfg.ai_label_enabled is True
+    assert cfg.ai_api_key == "sk-test"
