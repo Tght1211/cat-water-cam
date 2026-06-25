@@ -83,8 +83,12 @@ class AILabeler:
         """按 config 造一个真 client 的 AILabeler；未启用/缺 key 返回 None。"""
         if not cfg.ai_label_enabled or not cfg.ai_api_key:
             return None
+        import httpx
         from openai import OpenAI
-        client = OpenAI(base_url=cfg.ai_base_url, api_key=cfg.ai_api_key)
+        # trust_env=False：忽略环境里的 VPN/SOCKS 代理（HTTP_PROXY/ALL_PROXY）。AI 端点是本机代理，
+        # 走系统 SOCKS 代理反而会因缺 socksio 直接崩、或把本地请求绕进隧道——直连才对。
+        client = OpenAI(base_url=cfg.ai_base_url, api_key=cfg.ai_api_key,
+                        http_client=httpx.Client(trust_env=False))
         return cls(store, cfg.training_dir, cfg.ai_model, frames=cfg.ai_label_frames, client=client)
 
     def _call(self, messages) -> str:
