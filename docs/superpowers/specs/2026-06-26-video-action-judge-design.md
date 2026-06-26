@@ -1,7 +1,29 @@
-# 视频动作裁判：云 VLM 标注工厂 → 本地小视频模型（VideoMAE 冻结特征 + 小头）
+# 视频动作裁判：云 VLM 标注工厂 → 本地小视频模型（冻结视频主干 + 小头）
 
 日期：2026-06-26
-状态：已和用户确认方向，待 spec 评审
+状态：第一阶段已实现并测试通过；第二阶段按下方「环境校正附录」实施。
+
+> **环境校正附录（2026-06-27，落地前实测）**
+>
+> 写 spec 时按「Mac mini / 30G 磁盘」估算，落地前实测发现两处关键偏差，据此修订第二阶段的具体选型
+> （**架构不变**：仍是「冻结视频主干提特征 + 训一个小头 + 云 VLM 当标注工厂/过渡裁判」）：
+>
+> 1. **磁盘只剩 5.2G（97% 满）**，不是 30G。所以**坚决不引入 `transformers` + VideoMAE 权重**
+>    （约 550MB 新增）。
+> 2. **`torchvision` 0.27 已随 ultralytics 装好**，自带 Kinetics-400 预训练视频模型。改用
+>    **`torchvision.models.video.s3d`**（仅 **8.3M 参数**、权重单文件约 30MB、acc@1 68.4% 高于 r3d_18）
+>    当冻结特征主干——零新增重依赖、下载量从 ~550MB 降到 ~30MB。
+> 3. **小头改用 torch**（已装）的一层 `nn.Linear` + `BCEWithLogitsLoss`（`pos_weight` 处理类别不平衡），
+>    **不引入 sklearn**（省掉 scikit-learn + scipy 约 80MB）。几百步 Adam、CPU/MPS 秒级训完，可固定随机种子复现。
+>
+> 据此，下文凡提「VideoMAE」改读作「torchvision s3d」、凡提「sklearn LogisticRegression」改读作
+> 「torch 单层 logistic 头」。特征维度：s3d 分类器前的池化特征 **1024 维**。预处理用
+> `S3D_Weights.DEFAULT.transforms()`（resize/crop/归一化口径与预训练一致），每段抽 16 帧。
+>
+> **本轮第二阶段交付范围（数据无关、可单测的核心 + 一次真实 smoke）**：`videojudge.py`
+> （`S3DFeatureExtractor` 懒加载 + `DrinkingHead` 存取 + `LocalVideoClipJudge`）、特征缓存、
+> `video_trainer.py`（从缓存特征 + 当前标签训小头并登记版本）、`app.py` 裁判选择接线（VLM/本地、shadow/gate）。
+> **暂不做**：网页「训练视频模型」按钮、真实训练运行（要等 VLM 攒够约 100~200 段标注素材）——这两项留作后续。
 
 ## 背景与动机
 
