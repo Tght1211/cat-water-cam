@@ -79,13 +79,13 @@ class StatsStore:
         return {name: bool(pred) for name, pred in rows}
 
     def count_between(self, start_ts: float, end_ts: float) -> int:
-        # 「真实喝水」= 没被人工标注成「没喝」的事件。
-        # COALESCE(is_drinking,1)：未标注或标注「喝了」算 1，标注「没喝」(0) 被排除。
+        # 「真实喝水」= 被 AI/人工明确标注为「喝水」(is_drinking=1) 的事件。
+        # 口径：只数确认喝水的——未标注 / 标「没喝」/ 无对应 clip 的事件都不计。
         with self._conn() as conn:
             cur = conn.execute(
                 "SELECT COUNT(*) FROM events e "
-                "LEFT JOIN labels l ON e.clip_name = l.clip_name "
-                "WHERE e.ts >= ? AND e.ts < ? AND COALESCE(l.is_drinking, 1) <> 0",
+                "JOIN labels l ON e.clip_name = l.clip_name "
+                "WHERE e.ts >= ? AND e.ts < ? AND l.is_drinking = 1",
                 (start_ts, end_ts),
             )
             return int(cur.fetchone()[0])
@@ -105,12 +105,12 @@ class StatsStore:
         return out
 
     def events_between(self, start_ts: float, end_ts: float) -> list[dict]:
-        # 同 count_between：排除被标注「没喝」的事件，让时间点列表与计数一致。
+        # 同 count_between：只列被确认「喝水」的事件，让时间点列表与计数一致。
         with self._conn() as conn:
             cur = conn.execute(
                 "SELECT e.ts, e.clip_name FROM events e "
-                "LEFT JOIN labels l ON e.clip_name = l.clip_name "
-                "WHERE e.ts >= ? AND e.ts < ? AND COALESCE(l.is_drinking, 1) <> 0 "
+                "JOIN labels l ON e.clip_name = l.clip_name "
+                "WHERE e.ts >= ? AND e.ts < ? AND l.is_drinking = 1 "
                 "ORDER BY e.ts ASC",
                 (start_ts, end_ts),
             )

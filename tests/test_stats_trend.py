@@ -5,12 +5,17 @@ from catcam.stats import StatsStore
 
 
 def test_daily_counts_buckets_and_fills_zero(tmp_path):
-    stats = StatsStore(tmp_path / "db.sqlite")
+    db = tmp_path / "db.sqlite"
+    stats = StatsStore(db)
     today = datetime(2026, 6, 22, 12, 0, 0)
-    stats.record_event(today.timestamp())
-    stats.record_event(today.timestamp())
+    stats.record_event(today.timestamp(), "t1.mp4")
+    stats.record_event(today.timestamp(), "t2.mp4")
     yday = today - timedelta(days=1)
-    stats.record_event(yday.timestamp())
+    stats.record_event(yday.timestamp(), "y1.mp4")
+    # 口径：只数确认喝水的——给三段都标 is_drinking=1
+    with sqlite3.connect(db) as c:
+        for name in ("t1.mp4", "t2.mp4", "y1.mp4"):
+            c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES (?, 1, NULL)", (name,))
 
     week = stats.daily_counts(today, 7)
     assert len(week) == 7
@@ -19,26 +24,24 @@ def test_daily_counts_buckets_and_fills_zero(tmp_path):
     assert week[0][1] == 0               # 一周前补 0
 
 
-def test_count_excludes_clips_labeled_not_drinking(tmp_path):
-    stats = StatsStore(tmp_path / "db.sqlite")
+def test_count_only_includes_confirmed_drinking(tmp_path):
+    db = tmp_path / "db.sqlite"
+    stats = StatsStore(db)
     now = datetime(2026, 6, 22, 12, 0, 0)
     start, end = now.timestamp() - 10, now.timestamp() + 10
     stats.record_event(now.timestamp(), "clip_a.mp4")
     stats.record_event(now.timestamp(), "clip_b.mp4")
-    stats.record_event(now.timestamp(), None)   # 没有 clip 的事件也算
-    assert stats.count_between(start, end) == 3
+    stats.record_event(now.timestamp(), None)   # 无 clip → 永远不计
+    # 口径翻转：未标注一律不计
+    assert stats.count_between(start, end) == 0
 
-    # 把 clip_b 标注成「没喝」→ 应从计数与时间点里排除
-    with sqlite3.connect(tmp_path / "db.sqlite") as c:
-        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_b.mp4', 0, NULL)")
-    assert stats.count_between(start, end) == 2
-    names = [e["clip_name"] for e in stats.events_between(start, end)]
-    assert "clip_b.mp4" not in names and "clip_a.mp4" in names
-
-    # 标注「喝了」(1) 仍计入
-    with sqlite3.connect(tmp_path / "db.sqlite") as c:
+    # 标 a「喝了」(1) → 计入；标 b「没喝」(0) → 不计
+    with sqlite3.connect(db) as c:
         c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_a.mp4', 1, NULL)")
-    assert stats.count_between(start, end) == 2
+        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_b.mp4', 0, NULL)")
+    assert stats.count_between(start, end) == 1
+    names = [e["clip_name"] for e in stats.events_between(start, end)]
+    assert names == ["clip_a.mp4"]
 
 
 def test_model_hitrate_and_predictions(tmp_path):
