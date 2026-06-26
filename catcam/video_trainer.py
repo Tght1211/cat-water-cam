@@ -1,0 +1,84 @@
+"""离线训练本地视频小头：缓存 s3d 特征 + 当前标签 → 训 logistic 头 → 登记 registry 版本。
+
+不改运行中的 app。训练数据来自 VLM/人工已写进 labels 的标注（is_drinking）。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+
+from catcam.videojudge import DrinkingHead, S3DFeatureExtractor, read_clip_frames, FEATURE_DIM
+
+MIN_PER_CLASS = 4   # 每类至少这么多段才值得训
+
+
+def feature_cache_path(training_dir, clip_name: str) -> Path:
+    return Path(training_dir) / "features" / (Path(clip_name).stem + ".npy")
+
+
+def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM):
+    """取一段的特征：命中缓存直接读，否则抽帧→提取→存缓存。抽帧空返回 None。"""
+    clip_path = Path(clip_path)
+    cache = feature_cache_path(training_dir, clip_path.name)
+    if cache.exists():
+        return np.load(cache)
+    frames = read_clip_frames(clip_path)
+    if not frames:
+        return None
+    feat = np.asarray(extractor.extract(frames), np.float32).reshape(-1)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cache, feat)
+    return feat
+
+
+def _labeled_clips(store) -> list[tuple[str, int]]:
+    """从 labels 表取所有 (clip_name, is_drinking)。"""
+    import sqlite3
+    with sqlite3.connect(store.db_path) as conn:
+        rows = conn.execute("SELECT clip_name, is_drinking FROM labels").fetchall()
+    return [(name, int(v)) for name, v in rows]
+
+
+def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE_DIM):
+    """对每个有标注且 clip 文件还在的段，取特征 + 标签。返回 (X, y, names)。"""
+    clips_dir = Path(clips_dir)
+    X, y, names = [], [], []
+    for name, label in _labeled_clips(store):
+        clip = clips_dir / name
+        if not clip.exists():
+            continue
+        feat = extract_and_cache(clip, training_dir, extractor, dim)
+        if feat is None:
+            continue
+        X.append(feat); y.append(label); names.append(name)
+    if not X:
+        return np.empty((0, dim), np.float32), np.array([], int), []
+    return np.vstack(X).astype(np.float32), np.array(y, int), names
+
+
+def train_video_head(clips_dir, training_dir, store, registry, models_dir,
+                     extractor=None, dim: int = FEATURE_DIM, epochs: int = 300,
+                     val_ratio: float = 0.25, seed: int = 0, created_ts: float = 0.0) -> dict:
+    """训头并登记版本。数据不够 raise ValueError。返回 {version, top1, counts}。"""
+    extractor = extractor or S3DFeatureExtractor()
+    X, y, names = gather_dataset(clips_dir, training_dir, store, extractor, dim)
+    counts = {"drinking": int((y == 1).sum()), "not_drinking": int((y == 0).sum())}
+    too_few = [c for c in ("drinking", "not_drinking") if counts[c] < MIN_PER_CLASS]
+    if too_few:
+        raise ValueError(f"标注样本不够：当前 {counts}，每类需 ≥{MIN_PER_CLASS}。")
+    # 确定性留出集：固定种子打乱后取头部 val_ratio 当验证
+    rng = np.random.default_rng(seed)
+    idx = rng.permutation(len(y))
+    n_val = max(1, int(len(y) * val_ratio))
+    val_idx, train_idx = idx[:n_val], idx[n_val:]
+    head = DrinkingHead.fit(X[train_idx], y[train_idx], dim=dim, epochs=epochs, seed=seed)
+    preds = np.array([head.predict(X[i])[0] for i in val_idx], int)
+    top1 = float((preds == y[val_idx]).mean())
+    models_dir = Path(models_dir); models_dir.mkdir(parents=True, exist_ok=True)
+    head_path = models_dir / f"videohead_{int(created_ts)}.npz"
+    head.save(head_path)
+    entry = registry.add(path=head_path, top1=top1, image_counts=counts,
+                         label_counts=counts, base="s3d+head", epochs=epochs,
+                         imgsz=224, created_ts=created_ts)
+    return {"version": entry["id"], "top1": top1, "counts": counts}
