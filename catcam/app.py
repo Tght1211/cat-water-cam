@@ -15,6 +15,7 @@ from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
 from catcam.models import ModelRegistry
 from catcam.framebuffer import FrameBuffer
+from catcam.judge import VLMClipJudge, judge_and_notify
 from catcam.mailer import Emailer
 from catcam.netutil import lan_ip
 from catcam import nightvision
@@ -97,6 +98,12 @@ def main(config_path: str = "config.json") -> None:
     ai_labeler = AILabeler.from_config(feedback, cfg)  # 未启用/缺 key 返回 None
     if ai_labeler is not None:
         print(f"AI 自动标注已开启 → {cfg.ai_model}（⚠️ 画面帧会上传外部服务器）")
+    # 整段裁判：第一阶段用 VLM（包 ai_labeler）。它是「发邮件 + 记次数」的唯一权威——
+    # 判「真喝水」才发、才计入；没启用 AI（无 key）则没有裁判，不会发邮件、次数恒 0。
+    judge = VLMClipJudge(ai_labeler) if ai_labeler is not None else None
+    if judge is None and cfg.record_session:
+        print("⚠️ 未启用 AI 裁判（config 里 ai_api_key 为空）："
+              "不会发喝水邮件、今日喝水次数为 0。喝水判定依赖 AI——请填 ai_api_key。")
     emailer = Emailer(cfg)
     registry = ModelRegistry(cfg.models_dir / "registry.json")
     active_model = ActiveModel()
@@ -179,25 +186,17 @@ def main(config_path: str = "config.json") -> None:
 
     buf_interval = 1.0 / max(1, cfg.fps)  # 回放缓冲/会话写帧按 fps 节奏，保证时长/速度正确
 
-    def _email_async(start_ts: float, photo) -> None:
-        # 邮件含 SMTP 往返，放后台线程绝不阻塞采集；限流在 emailer 内部判定。
-        if photo is None:
-            return
-        threading.Thread(
-            target=emailer.notify_drinking,
-            args=(stats, photo, datetime.fromtimestamp(start_ts)),
-            daemon=True,
-        ).start()
-
-    def _ai_label_async(clip_name: str) -> None:
-        # 调外部 API，放后台线程绝不阻塞采集；失败只记日志、该段保持未标注。
-        if ai_labeler is None:
+    def _judge_async(clip_name: str, start_ts: float, photo) -> None:
+        # 整段裁判含外部 API 往返，放后台线程绝不阻塞采集。
+        # 裁判内部写标注；判「真喝水」且有照片才发邮件（限流仍在 emailer 内）。
+        if judge is None:
             return
         def _run():
             try:
-                ai_labeler.label(cfg.clips_dir / clip_name)
+                judge_and_notify(judge, emailer, stats, cfg.clips_dir / clip_name,
+                                 start_ts, photo)
             except Exception as e:  # noqa: BLE001
-                print(f"AI 标注失败（{clip_name}）：{e}")
+                print(f"AI 裁判流程异常（{clip_name}）：{e}")
         threading.Thread(target=_run, daemon=True).start()
 
     # 采集线程：全速读相机 → 更新预览（网页流畅）；按 fps 节奏喂回放缓冲，
@@ -220,16 +219,16 @@ def main(config_path: str = "config.json") -> None:
                     in_roi, since = presence.get()
                     res = session.update(now, frame, in_roi, since, frame_buffer)
                     if res is not None:
-                        print(f"记录一段喝水： {res.clip_name}")
-                        # 测试模型对这段的预测（不影响是否录，仅记下来供评估）。
+                        print(f"录到一段候选： {res.clip_name}（等 AI 裁判判是否真喝水）")
+                        # 影子模型对这段的预测（不影响判定，仅记下来供评估）。
                         pred = active_model.predict(res.photo)
                         stats.record_event(
                             res.timestamp, res.clip_name,
                             predicted=None if pred is None else int(pred),
                             predicted_by=active_model.active_id,
                         )
-                        _email_async(res.timestamp, res.photo)
-                        _ai_label_async(res.clip_name)
+                        # 整段裁判 → 判「真喝水」才发邮件 + 计入次数；放后台线程绝不阻塞采集。
+                        _judge_async(res.clip_name, res.timestamp, res.photo)
 
     threading.Thread(target=_capture, daemon=True).start()
 
@@ -249,8 +248,8 @@ def main(config_path: str = "config.json") -> None:
             elif not blocked:
                 clip = pipeline.detect(now, frame, night=night)
                 if clip:
-                    print(f"记录一次喝水： {clip}")
-                    _email_async(now, frame.copy())
+                    print(f"录到一段候选： {clip}（等 AI 裁判）")
+                    _judge_async(clip, now, frame.copy())
             time.sleep(cfg.detect_interval_seconds)
     finally:
         if session is not None:
