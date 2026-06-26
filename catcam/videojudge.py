@@ -95,3 +95,72 @@ class DrinkingHead:
     def load(cls, path) -> "DrinkingHead":
         with np.load(str(path)) as d:
             return cls(d["weight"], float(d["bias"]), d["mean"], d["std"])
+
+
+class S3DFeatureExtractor:
+    """冻结 s3d 主干特征提取器：一组 RGB 帧 → 1024 维特征。torch/torchvision 懒加载。"""
+
+    def __init__(self, device: str | None = None):
+        self._device = device
+        self._model = None
+        self._transforms = None
+        self._torch = None
+        self._feat = {}   # forward hook 暂存 avgpool 输出
+
+    def _ensure_loaded(self):
+        if self._model is not None:
+            return
+        import torch
+        from torchvision.models.video import s3d, S3D_Weights
+        w = S3D_Weights.DEFAULT
+        model = s3d(weights=w)
+        model.eval()
+        for p in model.parameters():       # 冻结
+            p.requires_grad_(False)
+        model.avgpool.register_forward_hook(
+            lambda m, i, o: self._feat.__setitem__("v", o.detach())
+        )
+        self._model = model
+        self._transforms = w.transforms()
+        self._torch = torch
+
+    def extract(self, frames) -> np.ndarray:
+        """frames: RGB(HWC uint8) 列表 → np.float32[1024]。"""
+        self._ensure_loaded()
+        torch = self._torch
+        # (T, H, W, C) uint8 → (T, C, H, W) uint8 → 官方 transforms → (C, T, H, W) → batch
+        arr = np.stack(frames).astype(np.uint8)
+        clip = torch.from_numpy(arr).permute(0, 3, 1, 2)
+        batch = self._transforms(clip).unsqueeze(0)
+        with torch.no_grad():
+            self._model(batch)
+        return self._feat["v"].flatten(1)[0].cpu().numpy().astype(np.float32)
+
+
+class LocalVideoClipJudge:
+    """本地视频裁判：clip → 抽帧 → s3d 特征 → 头 → Verdict（by=版本号）。
+
+    与 VLMClipJudge 同接口（judge(clip)->Verdict|None），可直接替进 app 的裁判位（后续一步）。
+    fail-open：抽帧空/出错 → None。注意：本地裁判**不写 labels**（预测不是训练真值，避免自我强化）。
+    """
+
+    def __init__(self, extractor, head, version: str, frames: int = CLIP_FRAMES, log=print):
+        self.extractor = extractor
+        self.head = head
+        self.version = version
+        self.frames = frames
+        self.log = log
+
+    def judge(self, clip_path):
+        from catcam.judge import Verdict
+        try:
+            frames = read_clip_frames(clip_path, self.frames)
+            if not frames:
+                return None
+            feat = self.extractor.extract(frames)
+            drinking, conf = self.head.predict(feat)
+        except Exception as e:  # noqa: BLE001 —— 裁判失败绝不能崩
+            self.log(f"本地视频裁判失败（{clip_path}）：{e}")
+            return None
+        return Verdict(drinking=bool(drinking), confidence=float(conf),
+                       reason="", by=self.version)

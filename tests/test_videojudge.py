@@ -68,3 +68,42 @@ def test_head_handles_imbalance():
     head = DrinkingHead.fit(X, y, dim=8, epochs=400, seed=0)
     pos = np.zeros(8, np.float32); pos[0] = 2.0
     assert head.predict(pos)[0] is True
+
+
+from catcam.videojudge import LocalVideoClipJudge, S3DFeatureExtractor
+from catcam.judge import Verdict
+
+
+class _FakeExtractor:
+    """假提取器：不碰真模型，按第 0 帧像素给个确定特征。"""
+    def __init__(self, dim=8): self.dim = dim
+    def extract(self, frames):
+        v = np.zeros(self.dim, np.float32)
+        v[0] = 2.0 if frames[0][0, 0, 0] > 128 else -2.0
+        return v
+
+
+def test_local_judge_returns_verdict(tmp_path):
+    clip = tmp_path / "a.mp4"; _make_clip(clip, n=16, color=(0, 0, 255))  # BGR→R 大→喝水
+    X, y = _synth(dim=8)
+    head = DrinkingHead.fit(X, y, dim=8, epochs=300, seed=0)
+    judge = LocalVideoClipJudge(_FakeExtractor(8), head, version="v3")
+    v = judge.judge(clip)
+    assert isinstance(v, Verdict) and v.by == "v3"
+    assert v.drinking is True and 0.0 <= v.confidence <= 1.0
+
+
+def test_local_judge_fail_open_on_empty(tmp_path):
+    # 抽帧为空（坏 clip）→ 返回 None，不崩
+    bad = tmp_path / "empty.mp4"; bad.write_bytes(b"not a video")
+    head = DrinkingHead.fit(*_synth(dim=8), dim=8, epochs=50)
+    judge = LocalVideoClipJudge(_FakeExtractor(8), head, version="v3")
+    assert judge.judge(bad) is None
+
+
+def test_s3d_extractor_real_smoke():
+    # 真 s3d：权重已缓存；一段 16 帧假画面 → 1024 维特征。验证真实主干路径可用。
+    ext = S3DFeatureExtractor()
+    frames = [np.full((24, 32, 3), 100 + i, np.uint8) for i in range(16)]
+    feat = ext.extract(frames)
+    assert feat.shape == (FEATURE_DIM,) and feat.dtype == np.float32
