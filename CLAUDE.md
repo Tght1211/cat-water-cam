@@ -75,7 +75,16 @@ python3 -m venv .venv
     外部服务器**，与「画面只在本机/局域网」原则冲突；规划中第二阶段用本地小视频模型接管后可关停 VLM 回归全本地。
   - fail-open（裁判失败只记日志、该段保持未标注，不影响录制）。人工 > AI：已人工标注的段不被覆盖。训练侧
     `prepare_dataset(balance=True)` 对 train 划分做类别平衡（多数类降采样），val 保持真实分布。
-  - 设计/路线（含第二阶段本地 VideoMAE）：`docs/superpowers/specs/2026-06-26-video-action-judge-design.md`。
+  - 设计/路线：`docs/superpowers/specs/2026-06-26-video-action-judge-design.md`（含 2026-06-27 环境校正附录）。
+- **本地视频模型（第二阶段，离线已就绪、未接裁判）**：`videojudge.py`（`s3d` 冻结特征 + `DrinkingHead`
+  torch 小头 + `LocalVideoClipJudge`）+ `video_trainer.py` + `python -m catcam.video_train`。用 VLM/人工攒的
+  `labels` 离线训一个本地视频「真喝水/没喝」小头（**看动作、非单帧**——这才是单帧 `yolov8n-cls` 弱的根因），
+  登记成 `base=s3d+head` 的版本（不自动生效）。主干用 torchvision 自带 `s3d`（8.3M、权重 ~30MB，免
+  transformers）；小头一层 logistic（免 sklearn）；特征按 clip 缓存进 `data/training/features/*.npy`。
+  - **类别不平衡下别看 top1**：训练报告同时给「喝水召回/精确」+「全猜没喝」基线——喝水样本少时 top1 会被多数类
+    带高（实测 10 喝/90 没喝时 top1 84% 却低于 96% 基线、喝水召回 0%）。**要等 VLM 攒够足量「喝水」正样本**。
+  - **本轮不改采集/裁判热路径**——`LocalVideoClipJudge` 与 `VLMClipJudge` 同接口，评估满意后再接进 `app.py`
+    的裁判位 + 复用 registry 的 shadow→gate（后续一步）。
 
 ## Conventions / gotchas
 
