@@ -40,7 +40,7 @@ def test_load_config_reads_existing_overrides(tmp_path):
 
 def test_ai_label_defaults(tmp_path):
     cfg = load_config(tmp_path / "config.json")
-    assert cfg.ai_label_enabled is False
+    assert cfg.ai_label_enabled is True   # 默认开（仍受 ai_api_key 把关，无 key 不动作）
     assert cfg.ai_base_url == "https://openrouter.ai/api/v1"
     assert cfg.ai_api_key == ""
     assert cfg.ai_model == "google/gemma-4-31b-it:free"

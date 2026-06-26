@@ -51,9 +51,11 @@ class Config:
     train_epochs: int = 15
     train_imgsz: int = 96
 
-    # AI 自动标注（外部视觉大模型，OpenRouter / OpenAI 兼容）：录一段自动判「喝/没喝」直接进训练。
-    # ⚠️ 开启后猫的画面帧会上传到外部服务器，违背「画面只在本机/局域网」原则——默认关，需显式开。
-    ai_label_enabled: bool = False
+    # AI 自动标注 / 整段裁判（外部视觉大模型，OpenRouter / OpenAI 兼容）：录一段自动判「喝/没喝」，
+    # 它是「发邮件 + 记次数」的唯一权威，并把判定写进训练数据。
+    # 默认开：仍受 ai_api_key 把关——没填 key 则不动作、不上传。
+    # ⚠️ 填了 key 开始判定后，猫的画面帧会上传外部视觉大模型，违背「画面只在本机/局域网」原则。
+    ai_label_enabled: bool = True
     ai_base_url: str = "https://openrouter.ai/api/v1"
     ai_api_key: str = ""                              # OpenRouter key，写在 config.json（已 gitignore）
     ai_model: str = "google/gemma-4-31b-it:free"      # 主模型
