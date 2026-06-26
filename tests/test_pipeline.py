@@ -45,9 +45,14 @@ def test_event_records_clip_and_stat(tmp_path):
     assert pipe.process(now=0.0, frame=_frame()) is None     # 开始计时
     clip_name = pipe.process(now=3.0, frame=_frame())        # 满 3s 触发
     assert clip_name == "clip_3000.mp4"
-    start, end = 0.0, 1e12
-    assert pipe.stats.count_between(start, end) == 1
     assert (tmp_path / "clips" / clip_name).exists()
+    # 计数口径：事件录下了，但要被确认「喝水」(is_drinking=1) 才计入次数
+    start, end = 0.0, 1e12
+    assert pipe.stats.count_between(start, end) == 0          # 还没确认 → 不计
+    import sqlite3
+    with sqlite3.connect(tmp_path / "s.db") as c:
+        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES (?, 1, NULL)", (clip_name,))
+    assert pipe.stats.count_between(start, end) == 1          # 确认喝水后才计
 
 
 class _SmallCatBelowThreshold:

@@ -1,3 +1,4 @@
+import sqlite3
 import time
 import numpy as np
 from fastapi.testclient import TestClient
@@ -40,6 +41,9 @@ def test_clips_list_includes_label_status(tmp_path):
 def test_today_stats_counts_recent_event(tmp_path):
     app, stats, *_ = _build(tmp_path)
     stats.record_event(time.time(), "clip_x.mp4")
+    # 计数口径：只数被确认「喝水」的段 → 标 clip_x 为 is_drinking=1
+    with sqlite3.connect(stats.db_path) as c:
+        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_x.mp4', 1, NULL)")
     client = TestClient(app)
     r = client.get("/api/stats/today")
     assert r.status_code == 200

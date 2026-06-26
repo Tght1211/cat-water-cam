@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime
 
 import numpy as np
@@ -38,6 +39,9 @@ def test_build_email_has_three_inline_images(tmp_path):
     stats = StatsStore(tmp_path / "db.sqlite")
     now = datetime(2026, 6, 22, 9, 0, 0)
     stats.record_event(now.timestamp(), "clip_1.mp4")
+    # 计数口径：只数被确认「喝水」的段 → 标 clip_1 为 is_drinking=1
+    with sqlite3.connect(tmp_path / "db.sqlite") as c:
+        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_1.mp4', 1, NULL)")
     frame = np.zeros((48, 64, 3), dtype=np.uint8)
     subject, html, images = build_drinking_email(stats, frame, now, "http://192.168.1.5:8000")
     assert set(images) == {"photo", "week", "month"}
