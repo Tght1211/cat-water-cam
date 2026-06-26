@@ -73,12 +73,22 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
     n_val = max(1, int(len(y) * val_ratio))
     val_idx, train_idx = idx[:n_val], idx[n_val:]
     head = DrinkingHead.fit(X[train_idx], y[train_idx], dim=dim, epochs=epochs, seed=seed)
+    yval = y[val_idx]
     preds = np.array([head.predict(X[i])[0] for i in val_idx], int)
-    top1 = float((preds == y[val_idx]).mean())
+    top1 = float((preds == yval).mean())
+    # 类别不平衡下 top1 会骗人（全猜「没喝」也能很高）：另报喝水类的召回/精确，和「全猜没喝」基线。
+    n_pos = int((yval == 1).sum()); n_neg = int((yval == 0).sum())
+    tp = int(((preds == 1) & (yval == 1)).sum()); pp = int((preds == 1).sum())
+    drinking_recall = (tp / n_pos) if n_pos else None        # 抓到了几成真喝水
+    drinking_precision = (tp / pp) if pp else None
+    naive_baseline = (max(n_pos, n_neg) / len(yval)) if len(yval) else None  # 全猜多数类的准确率
     models_dir = Path(models_dir); models_dir.mkdir(parents=True, exist_ok=True)
     head_path = models_dir / f"videohead_{int(created_ts)}.npz"
     head.save(head_path)
     entry = registry.add(path=head_path, top1=top1, image_counts=counts,
                          label_counts=counts, base="s3d+head", epochs=epochs,
                          imgsz=224, created_ts=created_ts)
-    return {"version": entry["id"], "top1": top1, "counts": counts}
+    return {"version": entry["id"], "top1": top1, "counts": counts,
+            "val_counts": {"drinking": n_pos, "not_drinking": n_neg},
+            "drinking_recall": drinking_recall, "drinking_precision": drinking_precision,
+            "naive_baseline": naive_baseline}
