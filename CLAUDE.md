@@ -62,18 +62,26 @@ python3 -m venv .venv
   - **教训**：早先把分类器当 `AND` 门（`cat_in_roi AND confirm()`），一个偏科模型（5👍/80👎 训出来、几乎全判「没喝」）直接把录制全掐死。模型还在迭代时**绝不能让它否决兜底**。`Pipeline.cat_in_bowl` 现在调 `active_model.gate(frame)`；shadow 恒 True。出错 fail-open。
   - 模式持久化在 registry（`active_mode`），网页 `/api/model/activate {id,mode}` 热切换；视频列表显示模型对每段的判断（`/api/clips` 的 `predictions`）。
 - **标注状态 / 避免重复训练**：`labels` 表加了 `trained_version` 列（NULL=已标注未训练）。`FeedbackStore.label_states()` 给出 待标注（靠 web 比对当前 clips）/ 已标注未训练 / 已标注已训练 + 👍👎 计数；训练完 `mark_trained(version)` 把当前标注全标为已训练。`/api/train` 在「无新标注」时拒绝，避免重复无效训练。改标注会把 `trained_version` 清回 NULL（数据变了 = 又得练）。
-- **AI 自动标注（可选、默认关）**：`ai_labeler.py` 的 `AILabeler` 在会话录完后台调外部视觉大模型
-  （OpenRouter / OpenAI 兼容，`ai_base_url`/`ai_api_key`/`ai_model` 可配）判「喝/没喝」，直接写
-  `labels`（`source='ai'` + 置信度 + 理由）并抽帧进 `data/training`。**⚠️ 开启后画面帧会上传外部服务器**，
-  与「画面只在本机/局域网」原则冲突——`ai_label_enabled` 默认 False，需显式开。失败 fail-open（只记日志、
-  该段保持未标注，不影响录制）。人工 > AI：已人工标注的段不被覆盖。训练侧 `prepare_dataset(balance=True)`
-  对 train 划分做类别平衡（多数类降采样），val 保持真实分布。
+- **AI 整段裁判 / 自动标注（默认开，需填 `ai_api_key`）**：`ai_labeler.py` 的 `AILabeler` 在会话录完后台调
+  外部视觉大模型（OpenRouter / OpenAI 兼容，`ai_base_url`/`ai_api_key`/`ai_model` 可配）判「喝/没喝」，写
+  `labels`（`source='ai'` + 置信度 + 理由）并抽帧进 `data/training`。
+  - **`judge.py` 的 `VLMClipJudge` 把它包成「整段裁判」，是「发邮件 + 记喝水次数」的唯一权威**（`app.py` 的
+    `_judge_async` → `judge_and_notify`）：判「真喝水」才发邮件、才计入次数；判「没喝」/ 失败则该段只留作素材，
+    **不发、不计**。`record_event`（事件历史 + 影子模型预测）照旧无条件记，计数靠下面的口径过滤。
+  - **计数口径**：`stats.py` 的 `count_between`/`events_between` 现在要求 `labels.is_drinking = 1` 才计——
+    未标注 / 标「没喝」/ 无 clip 的事件都不计入今日次数与趋势（即「只数 AI/人工确认喝水的」）。
+  - **默认开但受 key 把关**：`ai_label_enabled` 默认 True，`AILabeler.from_config` 仍要求 `ai_api_key` 非空才
+    动作——没填 key = 无裁判，不发邮件、次数恒 0（`app.py` 启动会告警）。**⚠️ 填了 key 开始判定后，画面帧会上传
+    外部服务器**，与「画面只在本机/局域网」原则冲突；规划中第二阶段用本地小视频模型接管后可关停 VLM 回归全本地。
+  - fail-open（裁判失败只记日志、该段保持未标注，不影响录制）。人工 > AI：已人工标注的段不被覆盖。训练侧
+    `prepare_dataset(balance=True)` 对 train 划分做类别平衡（多数类降采样），val 保持真实分布。
+  - 设计/路线（含第二阶段本地 VideoMAE）：`docs/superpowers/specs/2026-06-26-video-action-judge-design.md`。
 
 ## Conventions / gotchas
 
 - **`data/` 与 `config.json` 都被 gitignore**（连同 `*.pt`、`.venv/`）。运行产物（视频、db、下载的权重、用户本地配置）不进库。
 - `catcam.demo` 与 `catcam.app` 共用同一个 `create_app`：web 层只依赖注入进来的 store / recorder / `frame_provider` 回调，不知道帧从哪来 —— 加网页功能改 `web.py`，两条入口都受益。
-- **网页是单文件标签页应用**（`web.py` 的 `INDEX_HTML`，无框架、纯 vanilla JS）：四个标签 总览/趋势/视频/训练，切到哪个才加载哪个的数据。**视频列表懒加载**：每段先显示封面缩略图（`/clips/{name}/thumb.jpg`，只解码首帧）+ 播放按钮，点了才把该段换成 `<video>`，避免一进来所有视频一起 `preload` 转圈。内联 `onclick` 里嵌 `JSON.stringify(name)` 时属性要用**单引号**（值含双引号），否则 handler 被截断。`今日喝水次数 / 时间点` 已**按标注过滤**（标「没喝」的事件不计，见 `stats.py` 的 LEFT JOIN labels）。
+- **网页是单文件标签页应用**（`web.py` 的 `INDEX_HTML`，无框架、纯 vanilla JS）：四个标签 总览/趋势/视频/训练，切到哪个才加载哪个的数据。**视频列表懒加载**：每段先显示封面缩略图（`/clips/{name}/thumb.jpg`，只解码首帧）+ 播放按钮，点了才把该段换成 `<video>`，避免一进来所有视频一起 `preload` 转圈。内联 `onclick` 里嵌 `JSON.stringify(name)` 时属性要用**单引号**（值含双引号），否则 handler 被截断。`今日喝水次数 / 时间点` 已**按裁判口径过滤**——只数 `labels.is_drinking = 1` 的事件（未标注/没喝都不计，见 `stats.py` 的 `JOIN labels`）。
 - 测试覆盖每个模块且不依赖真实摄像头或 YOLO 权重：`vision.py` 把 YOLO 的 box 解析逻辑拆成纯函数 `filter_cat_boxes` 单测，`CatDetector` 用 `_FakeBox` 注入。新增逻辑沿用"纯函数 + 可注入依赖"以便单测。
 - web 文件名参数（`/clips/{name}`、feedback 的 `clip`）都手动挡 `/ \ ..` 防目录穿越，新增涉及路径的接口照做。
 - `web_host` 默认 `127.0.0.1`（画面不出本机）；改成 `0.0.0.0` 会暴露给整个局域网 —— 别擅自改默认。
