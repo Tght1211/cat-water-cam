@@ -15,7 +15,7 @@ from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
 from catcam.models import ModelRegistry
 from catcam.framebuffer import FrameBuffer
-from catcam.judge import VLMClipJudge, judge_and_notify
+from catcam.judge import VLMClipJudge, route_clip
 from catcam.mailer import Emailer
 from catcam.netutil import lan_ip
 from catcam import nightvision
@@ -106,6 +106,21 @@ def main(config_path: str = "config.json") -> None:
               "不会发喝水邮件、今日喝水次数为 0。喝水判定依赖 AI——请填 ai_api_key。")
     emailer = Emailer(cfg)
     registry = ModelRegistry(cfg.models_dir / "registry.json")
+    # 本地视频裁判（s3d+head）：仅当 registry 当前生效版本是视频模型时加载。
+    # shadow=影子评估（VLM 仍权威）；gate=本地当权威且不再调 VLM。其余情况 = None（第一阶段行为）。
+    local_video_judge = None
+    local_video_mode = "shadow"
+    _active = registry.get(registry.active_id()) if registry.active_id() else None
+    if _active and _active.get("base") == "s3d+head":
+        try:
+            from catcam.videojudge import S3DFeatureExtractor, DrinkingHead, LocalVideoClipJudge
+            _head = DrinkingHead.load(_active["path"])
+            local_video_judge = LocalVideoClipJudge(S3DFeatureExtractor(), _head, _active["id"])
+            local_video_mode = registry.active_mode()
+            tip = "本地当权威、不调 VLM" if local_video_mode == "gate" else "影子评估、VLM 仍权威"
+            print(f"本地视频裁判已加载：{_active['id']}（{local_video_mode} · {tip}）")
+        except Exception as e:  # noqa: BLE001
+            print(f"本地视频裁判加载失败，忽略（继续用 VLM）：{e}")
     active_model = ActiveModel()
     # 启动时把上次选中的「生效模型」加载进来（若有）。
     active_path = registry.active_path()
@@ -187,14 +202,16 @@ def main(config_path: str = "config.json") -> None:
     buf_interval = 1.0 / max(1, cfg.fps)  # 回放缓冲/会话写帧按 fps 节奏，保证时长/速度正确
 
     def _judge_async(clip_name: str, start_ts: float, photo) -> None:
-        # 整段裁判含外部 API 往返，放后台线程绝不阻塞采集。
-        # 裁判内部写标注；判「真喝水」且有照片才发邮件（限流仍在 emailer 内）。
-        if judge is None:
+        # 会话录完后台编排：按模式决定谁标注/谁判邮件计数/谁影子预测。绝不阻塞采集。
+        if judge is None and local_video_judge is None:
             return
         def _run():
             try:
-                judge_and_notify(judge, emailer, stats, cfg.clips_dir / clip_name,
-                                 start_ts, photo)
+                route_clip(
+                    clip_path=cfg.clips_dir / clip_name, start_ts=start_ts, photo=photo,
+                    ai_labeler=ai_labeler, local_judge=local_video_judge,
+                    mode=local_video_mode, emailer=emailer, stats=stats, feedback=feedback,
+                )
             except Exception as e:  # noqa: BLE001
                 print(f"AI 裁判流程异常（{clip_name}）：{e}")
         threading.Thread(target=_run, daemon=True).start()
