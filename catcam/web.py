@@ -721,6 +721,12 @@ def create_app(
         if model_id is None:
             active_model.clear()
         else:
+            entry = registry.get(model_id)
+            if entry and entry.get("base") == "s3d+head":
+                # 视频模型：不塞进单帧 active_model；清掉单帧模型，视频裁判在重启后按 registry 生效。
+                active_model.clear()
+                return {"active": registry.active_id(), "mode": registry.active_mode(),
+                        "note": "视频模型已登记生效，重启采集进程后由本地视频裁判接管"}
             path = registry.active_path()
             if not path or not Path(path).exists():
                 raise HTTPException(status_code=404, detail="模型文件丢了")

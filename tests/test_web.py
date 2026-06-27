@@ -118,3 +118,30 @@ def test_clips_includes_label_meta(tmp_path):
     assert "meta" in body
     m = body["meta"]["clip_1000.mp4"]
     assert m["source"] == "ai" and m["reason"] == "舔水" and m["is_drinking"] is True
+
+
+def _build_with_registry(tmp_path):
+    from catcam.models import ModelRegistry
+    from catcam.classifier import ActiveModel
+    stats = StatsStore(tmp_path / "s.db")
+    recorder = ClipRecorder(clips_dir=tmp_path / "clips", max_clips=10, fps=5)
+    feedback = FeedbackStore(db_path=tmp_path / "f.db", training_dir=tmp_path / "train")
+    registry = ModelRegistry(tmp_path / "models" / "registry.json")
+    active_model = ActiveModel()
+    app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir,
+                     registry=registry, active_model=active_model)
+    return app, stats, recorder, feedback, registry, active_model
+
+
+def test_activate_s3d_head_version_does_not_500(tmp_path):
+    app, stats, recorder, feedback, registry, active_model = _build_with_registry(tmp_path)
+    head_path = tmp_path / "videohead_1.npz"; head_path.write_bytes(b"x")
+    registry.add(path=head_path, top1=0.9, image_counts={"drinking": 5, "not_drinking": 5},
+                 label_counts=None, base="s3d+head", epochs=300, imgsz=224, created_ts=1.0)
+    client = TestClient(app)
+    r = client.post("/api/model/activate", json={"id": "v1", "mode": "shadow"})
+    assert r.status_code == 200
+    assert registry.active_id() == "v1" and registry.active_mode() == "shadow"
+    # 视频版本不该被塞进单帧 active_model（否则会加载成一个 bogus YOLO）；应清空、留给视频裁判。
+    assert active_model.active_id is None
+    assert "重启" in (r.json().get("note") or "")
