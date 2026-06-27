@@ -85,3 +85,18 @@ def test_migration_backfills_source_human(tmp_path):
     con.commit(); con.close()
     store = FeedbackStore(db, tmp_path / "training")  # 触发迁移 + 回填
     assert store.label_source("old.mp4") == "human"
+
+
+def test_record_machine_label_no_frames_and_respects_human(tmp_path):
+    store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    # 机器标（source=local）：写进 labels 但不抽训练帧
+    store.record_machine_label("m.mp4", True, source="local", confidence=0.7, reason="本地判")
+    assert store.get_label("m.mp4") is True
+    assert store.label_source("m.mp4") == "local"
+    assert not (tmp_path / "training" / "drinking").exists()   # 没抽帧
+    # 人工标过的不被机器覆盖
+    clip = _make_clip(tmp_path, ts=7.0)
+    store.label_clip(clip, True)                                # 人工=喝水
+    store.record_machine_label(clip.name, False, source="local")  # 机器想改成没喝
+    assert store.get_label(clip.name) is True                  # 仍是人工的
+    assert store.label_source(clip.name) == "human"

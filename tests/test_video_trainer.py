@@ -57,3 +57,13 @@ def test_train_video_head_registers_version(tmp_path):
     assert entry["base"] == "s3d+head"
     head = DrinkingHead.load(entry["path"])
     assert head.predict(np.array([2.0] + [0.0] * 7, np.float32))[0] in (True, False)
+
+
+def test_gather_excludes_source_local(tmp_path):
+    clips = tmp_path / "clips"; clips.mkdir()
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    _clip(clips / "ai.mp4", 200); store.label_clip(clips / "ai.mp4", True)         # source=human
+    _clip(clips / "loc.mp4", 200); store.record_machine_label("loc.mp4", True, source="local")
+    X, y, names = gather_dataset(clips, training, store, _FakeExtractor(8), dim=8)
+    assert "loc.mp4" not in names and "ai.mp4" in names     # 本地判定不进训练集

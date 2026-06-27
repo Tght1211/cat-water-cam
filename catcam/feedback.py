@@ -80,6 +80,28 @@ class FeedbackStore:
         sub = "drinking" if is_drinking else "not_drinking"
         extract_frames(clip_path, self.training_dir / sub, max_frames)
 
+    def record_machine_label(self, clip_name: str, is_drinking: bool, source: str = "local",
+                             confidence: float | None = None, reason: str | None = None) -> bool:
+        """机器判定写 labels 行（驱动计数/邮件），**不抽训练帧**（判定不是训练真值）。
+
+        不覆盖人工/AI 标注（human/ai 优先）。返回是否写入。
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT source FROM labels WHERE clip_name = ?", (clip_name,)
+            ).fetchone()
+            if row is not None and row[0] in ("human", "ai"):
+                return False
+            conn.execute(
+                "INSERT INTO labels (clip_name, is_drinking, ts, trained_version, source, confidence, reason) "
+                "VALUES (?, ?, ?, NULL, ?, ?, ?) "
+                "ON CONFLICT(clip_name) DO UPDATE SET "
+                "is_drinking=excluded.is_drinking, ts=excluded.ts, source=excluded.source, "
+                "confidence=excluded.confidence, reason=excluded.reason",
+                (clip_name, 1 if is_drinking else 0, time.time(), source, confidence, reason),
+            )
+        return True
+
     def get_label(self, clip_name: str) -> bool | None:
         with self._conn() as conn:
             cur = conn.execute(

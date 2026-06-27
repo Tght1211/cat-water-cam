@@ -33,10 +33,12 @@ def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM
 
 
 def _labeled_clips(store) -> list[tuple[str, int]]:
-    """从 labels 表取所有 (clip_name, is_drinking)。"""
+    """从 labels 表取所有 (clip_name, is_drinking)；排除 source='local'（机器自身判定，不当训练真值）。"""
     import sqlite3
     with sqlite3.connect(store.db_path) as conn:
-        rows = conn.execute("SELECT clip_name, is_drinking FROM labels").fetchall()
+        rows = conn.execute(
+            "SELECT clip_name, is_drinking FROM labels WHERE source IS NULL OR source != 'local'"
+        ).fetchall()
     return [(name, int(v)) for name, v in rows]
 
 
