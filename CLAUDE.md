@@ -83,8 +83,11 @@ python3 -m venv .venv
   transformers）；小头一层 logistic（免 sklearn）；特征按 clip 缓存进 `data/training/features/*.npy`。
   - **类别不平衡下别看 top1**：训练报告同时给「喝水召回/精确」+「全猜没喝」基线——喝水样本少时 top1 会被多数类
     带高（实测 10 喝/90 没喝时 top1 84% 却低于 96% 基线、喝水召回 0%）。**要等 VLM 攒够足量「喝水」正样本**。
-  - **本轮不改采集/裁判热路径**——`LocalVideoClipJudge` 与 `VLMClipJudge` 同接口，评估满意后再接进 `app.py`
-    的裁判位 + 复用 registry 的 shadow→gate（后续一步）。
+  - **已接入裁判（shadow→gate）**：`judge.route_clip` 按模式编排——`shadow`=本地影子评估（回填
+    `events.predicted` 供 `model_hitrate`，VLM 仍当邮件/计数权威）；`gate`=本地当权威、写 `source='local'`
+    计数标签且**不再调 VLM**（画面不出本机）。`app.py` 启动按 registry 当前版本加载（**切视频模型需重启采集进程**；
+    web `/api/model/activate` 对 `s3d+head` 版本只登记、不塞单帧 `active_model`）。没有 s3d+head 生效时行为与
+    第一阶段一致。`video_trainer` 排除 `source='local'` 防自我强化。
 
 ## Conventions / gotchas
 
