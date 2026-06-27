@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -54,3 +55,37 @@ def judge_and_notify(judge, emailer, stats, clip_path, start_ts: float, photo, l
     if verdict is not None and verdict.drinking and photo is not None:
         emailer.notify_drinking(stats, photo, datetime.fromtimestamp(start_ts))
     return verdict
+
+
+def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mode: str,
+               emailer, stats, feedback, log=print) -> dict:
+    """会话录完后按模式编排：谁标注 / 谁判邮件计数 / 谁影子预测。返回各动作结果（供测试/日志）。
+
+    - gate + 有本地模型：本地当权威，写 source='local' 计数标签，**不调 VLM**（画面不出本机）。
+    - 否则（shadow / 无本地）：VLM 当权威+标注（第一阶段行为）；有本地模型则只影子预测、回填 events。
+    """
+    name = Path(clip_path).name
+    authority = None
+    emailed = False
+    shadow_pred = None
+
+    if mode == "gate" and local_judge is not None:
+        authority = local_judge.judge(clip_path)
+        if authority is not None:
+            feedback.record_machine_label(
+                name, authority.drinking, source="local",
+                confidence=authority.confidence, reason=authority.reason,
+            )
+    else:
+        if ai_labeler is not None:
+            authority = VLMClipJudge(ai_labeler, log).judge(clip_path)
+        if local_judge is not None:
+            v = local_judge.judge(clip_path)
+            if v is not None:
+                stats.set_prediction(name, int(v.drinking), local_judge.version)
+                shadow_pred = v.drinking
+
+    if authority is not None and authority.drinking and photo is not None:
+        emailer.notify_drinking(stats, photo, datetime.fromtimestamp(start_ts))
+        emailed = True
+    return {"authority": authority, "emailed": emailed, "shadow_pred": shadow_pred}
