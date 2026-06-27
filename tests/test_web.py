@@ -145,3 +145,31 @@ def test_activate_s3d_head_version_does_not_500(tmp_path):
     # 视频版本不该被塞进单帧 active_model（否则会加载成一个 bogus YOLO）；应清空、留给视频裁判。
     assert active_model.active_id is None
     assert "重启" in (r.json().get("note") or "")
+
+
+class _FakeVideoTrainer:
+    def __init__(self): self.started = 0; self._state = "idle"
+    def start(self): self.started += 1; self._state = "running"; return True
+    def status(self): return {"state": self._state, "detail": "x", "result": None,
+                              "models": [], "active": None}
+
+
+def test_train_video_endpoints(tmp_path):
+    from catcam.models import ModelRegistry
+    from catcam.classifier import ActiveModel
+    stats = StatsStore(tmp_path / "s.db")
+    recorder = ClipRecorder(clips_dir=tmp_path / "clips", max_clips=10, fps=5)
+    feedback = FeedbackStore(db_path=tmp_path / "f.db", training_dir=tmp_path / "train")
+    vt = _FakeVideoTrainer()
+    app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir, video_trainer=vt)
+    client = TestClient(app)
+    assert client.post("/api/train_video").json()["started"] is True
+    assert vt.started == 1
+    assert client.get("/api/train_video/status").json()["state"] == "running"
+
+
+def test_train_video_disabled_when_not_wired(tmp_path):
+    app, *_ = _build(tmp_path)   # 没传 video_trainer
+    client = TestClient(app)
+    assert client.post("/api/train_video").json()["started"] is False
+    assert client.get("/api/train_video/status").json()["state"] == "disabled"

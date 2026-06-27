@@ -353,6 +353,11 @@ main{padding:30px 0 90px}
 <div class="t-line"><span id="tpLabel"></span><b id="tpEta"></b></div>
 <div class="t-bar" id="tpBar"><i></i></div>
 </div>
+<hr style="border:none;border-top:1px solid #eee;margin:16px 0">
+<p>或训练<b>看动作</b>的视频模型（s3d 冻结特征 + 小头）——单帧分类器看不出「舔水」这个<b>动作</b>，这是它弱的根因。
+首次要为每段抽特征，可能几分钟；看报告里的<b>喝水召回</b>（样本不平衡时 top1 会骗人）。训完不自动生效，去下面设为生效（切视频模型需重启采集进程）。</p>
+<button id="trainVideoBtn" class="btn" onclick="trainVideo()">训练视频模型</button>
+<div class="t-status" id="trainVideoStatus"></div>
 </div></div>
 <div class="card"><div class="card-h">当前生效模型</div><div class="card-b">
 <div id="activeBox"></div>
@@ -387,7 +392,7 @@ function show(t){
   history.replaceState(null,'','#'+t);
   if(t==='trend')renderTrend();
   if(t==='clips')loadClips();
-  if(t==='train')pollTrain();
+  if(t==='train'){pollTrain();pollTrainVideo();}
 }
 $$('.tabs button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
 
@@ -592,6 +597,35 @@ async function pollTrain(){
   }
   renderActive(s); renderModels(s);
 }
+
+/* 训练视频模型（s3d+head，与单帧训练并存） */
+let trainVideoTimer=null;
+function fmtPct(a){return (typeof a==='number')?(a*100).toFixed(0)+'%':'—';}
+async function trainVideo(){
+  const r=await (await fetch('/api/train_video',{method:'POST'})).json();
+  if(!r.started&&r.error){$('#trainVideoStatus').textContent=r.error;return;}
+  pollTrainVideo();
+}
+async function pollTrainVideo(){
+  const s=await (await fetch('/api/train_video/status')).json();
+  const btn=$('#trainVideoBtn'),st=$('#trainVideoStatus');
+  if(s.state==='disabled'){btn.disabled=true;st.textContent='本入口未启用视频训练';return;}
+  if(s.state==='running'){
+    btn.disabled=true;st.textContent=s.detail||'训练中…';
+    if(!trainVideoTimer)trainVideoTimer=setInterval(pollTrainVideo,2000);
+  }else{
+    if(trainVideoTimer){clearInterval(trainVideoTimer);trainVideoTimer=null;}
+    btn.disabled=false;
+    const r=s.result;
+    if(s.state==='done'&&r){
+      st.innerHTML=`完成 ${r.version} · <b>喝水召回 ${fmtPct(r.drinking_recall)}</b> `+
+        `精确 ${fmtPct(r.drinking_precision)} <span style="color:#86868b">`+
+        `(top1 ${fmtPct(r.top1)}，全猜没喝基线 ${fmtPct(r.naive_baseline)}；`+
+        `样本 👍${r.counts.drinking}/👎${r.counts.not_drinking})</span>`;
+    }else{st.textContent=s.detail||'';}
+    if(s.models)renderModels(s);
+  }
+}
 function renderActive(s){
   const box=$('#activeBox'),m=(s.models||[]).find(x=>x.id===s.active),mode=s.active_mode||'shadow';
   if(!m){
@@ -657,6 +691,7 @@ def create_app(
     trainer=None,
     registry=None,
     active_model=None,
+    video_trainer=None,
 ) -> FastAPI:
     app = FastAPI()
     clips_dir = Path(clips_dir)
@@ -707,6 +742,20 @@ def create_app(
             s["active_mode"] = registry.active_mode()
             s["hitrate"] = stats.model_hitrate(registry.active_id()) if registry.active_id() else None
         return s
+
+    @app.post("/api/train_video")
+    def train_video():
+        if video_trainer is None:
+            return JSONResponse({"started": False, "error": "本入口未启用视频训练"})
+        started = video_trainer.start()
+        return JSONResponse({"started": started,
+                             "error": None if started else "已经在训练中"})
+
+    @app.get("/api/train_video/status")
+    def train_video_status():
+        if video_trainer is None:
+            return {"state": "disabled", "detail": "本入口未启用视频训练"}
+        return video_trainer.status()
 
     @app.post("/api/model/activate")
     def activate(body: dict):
