@@ -25,6 +25,7 @@ from catcam.session import DrinkSession
 from catcam.simple import MotionGrayDetector
 from catcam.stats import StatsStore
 from catcam.trainer import TrainingManager
+from catcam.video_trainer import VideoTrainingManager
 from catcam.vision import CatDetector
 from catcam.web import create_app
 
@@ -122,9 +123,11 @@ def main(config_path: str = "config.json") -> None:
         except Exception as e:  # noqa: BLE001
             print(f"本地视频裁判加载失败，忽略（继续用 VLM）：{e}")
     active_model = ActiveModel()
-    # 启动时把上次选中的「生效模型」加载进来（若有）。
+    # 启动时把上次选中的「生效模型」加载进来（若有）。s3d+head 视频版本不走这里
+    # （由上面的 local_video_judge 处理；塞进单帧 active_model 会被 ultralytics 误当 YOLO 加载）。
     active_path = registry.active_path()
-    if active_path and Path(active_path).exists():
+    _active_is_video = bool(_active and _active.get("base") == "s3d+head")
+    if active_path and Path(active_path).exists() and not _active_is_video:
         try:
             mode = registry.active_mode()
             active_model.set(DrinkingClassifier.from_path(active_path), registry.active_id(), mode)
@@ -135,6 +138,10 @@ def main(config_path: str = "config.json") -> None:
     trainer = TrainingManager(
         cfg.training_dir, cfg.models_dir, cfg.cls_base_model, cfg.train_epochs, cfg.train_imgsz,
         feedback=feedback, registry=registry,
+    )
+    # 网页「训练视频模型」按钮用：后台训 s3d+head 小头（与单帧 TrainingManager 并存）。
+    video_trainer = VideoTrainingManager(
+        cfg.clips_dir, cfg.training_dir, feedback, registry, cfg.models_dir,
     )
     # 会话录制要把「凑近过程 + dwell 这几秒」一起补进开头，缓冲就开这么长。
     buffer_seconds = (
@@ -168,7 +175,7 @@ def main(config_path: str = "config.json") -> None:
     latest = LatestFrame()
     app = create_app(
         stats, recorder, feedback, latest.get, cfg.clips_dir, trainer,
-        registry=registry, active_model=active_model,
+        registry=registry, active_model=active_model, video_trainer=video_trainer,
     )
     threading.Thread(
         target=_serve_web, args=(app, cfg.web_host, cfg.web_port), daemon=True
