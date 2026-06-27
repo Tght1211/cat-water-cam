@@ -67,3 +67,37 @@ def test_gather_excludes_source_local(tmp_path):
     _clip(clips / "loc.mp4", 200); store.record_machine_label("loc.mp4", True, source="local")
     X, y, names = gather_dataset(clips, training, store, _FakeExtractor(8), dim=8)
     assert "loc.mp4" not in names and "ai.mp4" in names     # 本地判定不进训练集
+
+
+def test_video_training_manager_runs_and_reports(tmp_path):
+    from catcam.video_trainer import VideoTrainingManager
+    from catcam.models import ModelRegistry
+    clips = tmp_path / "clips"; clips.mkdir()
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    for i in range(6):
+        _clip(clips / f"p{i}.mp4", 200); store.label_clip(clips / f"p{i}.mp4", True)
+    for i in range(6):
+        _clip(clips / f"n{i}.mp4", 10); store.label_clip(clips / f"n{i}.mp4", False)
+    registry = ModelRegistry(tmp_path / "models" / "registry.json")
+    mgr = VideoTrainingManager(clips, training, store, registry, tmp_path / "models",
+                               extractor=_FakeExtractor(8), dim=8, epochs=200)
+    mgr._run()                                   # 同步跑一次（避开线程时序）
+    s = mgr.status()
+    assert s["state"] == "done"
+    assert s["result"]["version"] == "v1"
+    assert "召回" in s["detail"]
+    assert s["models"][0]["base"] == "s3d+head"
+
+
+def test_video_training_manager_error_on_too_few(tmp_path):
+    from catcam.video_trainer import VideoTrainingManager
+    from catcam.models import ModelRegistry
+    clips = tmp_path / "clips"; clips.mkdir()
+    store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    registry = ModelRegistry(tmp_path / "models" / "registry.json")
+    mgr = VideoTrainingManager(clips, tmp_path / "training", store, registry, tmp_path / "models",
+                               extractor=_FakeExtractor(8), dim=8)
+    mgr._run()
+    s = mgr.status()
+    assert s["state"] == "error" and "不够" in s["detail"]

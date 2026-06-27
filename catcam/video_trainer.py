@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -94,3 +96,67 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
             "val_counts": {"drinking": n_pos, "not_drinking": n_neg},
             "drinking_recall": drinking_recall, "drinking_precision": drinking_precision,
             "naive_baseline": naive_baseline}
+
+
+def _pct(x) -> str:
+    return f"{x:.0%}" if isinstance(x, float) else "—"
+
+
+class VideoTrainingManager:
+    """网页一键训练本地视频模型：后台线程跑 train_video_head，随时查状态。
+
+    与单帧 TrainingManager 并存。extractor 可注入（测试塞假提取器）；None=用真 s3d。
+    训完登记成 base=s3d+head 的版本（不自动生效）。
+    """
+
+    def __init__(self, clips_dir, training_dir, feedback, registry, models_dir,
+                 extractor=None, dim: int = FEATURE_DIM, epochs: int = 300):
+        self.clips_dir = clips_dir
+        self.training_dir = training_dir
+        self.feedback = feedback
+        self.registry = registry
+        self.models_dir = models_dir
+        self._extractor = extractor
+        self._dim = dim
+        self._epochs = epochs
+        self._lock = threading.Lock()
+        self._state = "idle"   # idle | running | done | error
+        self._detail = ""
+        self._result: dict | None = None
+
+    def status(self) -> dict:
+        with self._lock:
+            base = {"state": self._state, "detail": self._detail, "result": self._result}
+        if self.registry is not None:
+            base["models"] = self.registry.list()
+            base["active"] = self.registry.active_id()
+        return base
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._state == "running":
+                return False
+            self._state = "running"
+            self._detail = "训练中…（首次要为每段抽 s3d 特征，可能要几分钟）"
+            self._result = None
+        threading.Thread(target=self._run, daemon=True).start()
+        return True
+
+    def _run(self) -> None:
+        try:
+            res = train_video_head(
+                self.clips_dir, self.training_dir, self.feedback, self.registry, self.models_dir,
+                extractor=self._extractor, dim=self._dim, epochs=self._epochs, created_ts=time.time(),
+            )
+            detail = (f"完成 {res['version']} · 喝水召回 {_pct(res['drinking_recall'])} "
+                      f"精确 {_pct(res['drinking_precision'])}（top1 {_pct(res['top1'])}，"
+                      f"全猜没喝基线 {_pct(res['naive_baseline'])}；样本 👍{res['counts']['drinking']}"
+                      f"/👎{res['counts']['not_drinking']}）。未自动生效。")
+            with self._lock:
+                self._state = "done"; self._result = res; self._detail = detail
+        except ValueError as e:   # 样本不够等可预期问题
+            with self._lock:
+                self._state = "error"; self._detail = str(e)
+        except Exception as e:    # noqa: BLE001
+            with self._lock:
+                self._state = "error"; self._detail = f"训练失败：{e}"
