@@ -55,6 +55,14 @@ class StatsStore:
             )
             return int(cur.lastrowid)
 
+    def set_prediction(self, clip_name: str, predicted: int, predicted_by: str | None) -> None:
+        """回填某段的「测试模型预测」（影子模式：录完后台判完再写）。更新该 clip 的事件行。"""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE events SET predicted = ?, predicted_by = ? WHERE clip_name = ?",
+                (int(predicted), predicted_by, clip_name),
+            )
+
     def model_hitrate(self, version: str) -> dict:
         """某版本「测试模型」在真实数据上的命中率：它预测过、且该段已人工标注的，预测对了多少。"""
         with self._conn() as conn:

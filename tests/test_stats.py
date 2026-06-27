@@ -51,3 +51,13 @@ def test_record_returns_id(tmp_path):
     first = store.record_event(1.0)
     second = store.record_event(2.0)
     assert second == first + 1
+
+
+def test_set_prediction_updates_event(tmp_path):
+    db = tmp_path / "t.db"
+    store = StatsStore(db)
+    store.record_event(100.0, "clip_p.mp4")          # 初始无预测
+    store.set_prediction("clip_p.mp4", 1, "v5")
+    assert store.clip_predictions().get("clip_p.mp4") is True
+    hr = store.model_hitrate("v5")                    # 还没标注 → total 0
+    assert hr["total"] == 0
