@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import io
+import os
 import threading
 import time
 from pathlib import Path
@@ -19,18 +21,44 @@ def feature_cache_path(training_dir, clip_name: str) -> Path:
     return Path(training_dir) / "features" / (Path(clip_name).stem + ".npy")
 
 
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """先写临时文件再原子替换——任何中途失败都不会留下半截缓存文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _save_npy(path: Path, arr: np.ndarray) -> None:
+    """经 BytesIO 存 .npy：纯 Python 写，绕开 numpy 的 FILE*(tofile) 路径
+    （守护进程/3.14 线程里 `_fdopen` 会失败、把文件写一半留成损坏头）。原子落盘。"""
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    _atomic_write_bytes(Path(path), buf.getvalue())
+
+
+def _load_npy(path: Path) -> np.ndarray:
+    """经 BytesIO 读 .npy：纯 Python 读，绕开 FILE*(fromfile)。"""
+    return np.load(io.BytesIO(Path(path).read_bytes()))
+
+
 def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM):
-    """取一段的特征：命中缓存直接读，否则抽帧→提取→存缓存。抽帧空返回 None。"""
+    """取一段的特征：命中缓存直接读，否则抽帧→提取→存缓存。抽帧空返回 None。
+
+    缓存损坏/截断（上次写一半崩了）当作未命中：重抽并覆盖（自愈）。
+    """
     clip_path = Path(clip_path)
     cache = feature_cache_path(training_dir, clip_path.name)
     if cache.exists():
-        return np.load(cache)
+        try:
+            return _load_npy(cache)
+        except Exception:  # noqa: BLE001 —— 损坏缓存不致命：重抽覆盖
+            pass
     frames = read_clip_frames(clip_path)
     if not frames:
         return None
     feat = np.asarray(extractor.extract(frames), np.float32).reshape(-1)
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    np.save(cache, feat)
+    _save_npy(cache, feat)
     return feat
 
 
@@ -158,5 +186,7 @@ class VideoTrainingManager:
             with self._lock:
                 self._state = "error"; self._detail = str(e)
         except Exception as e:    # noqa: BLE001
+            import traceback
+            print("视频训练失败，完整堆栈：\n" + traceback.format_exc(), flush=True)
             with self._lock:
                 self._state = "error"; self._detail = f"训练失败：{e}"

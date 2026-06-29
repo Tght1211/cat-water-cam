@@ -101,3 +101,18 @@ def test_video_training_manager_error_on_too_few(tmp_path):
     mgr._run()
     s = mgr.status()
     assert s["state"] == "error" and "不够" in s["detail"]
+
+
+def test_extract_and_cache_self_heals_corrupt(tmp_path):
+    from catcam.video_trainer import extract_and_cache, feature_cache_path
+    clips = tmp_path / "clips"; clips.mkdir()
+    training = tmp_path / "training"
+    _clip(clips / "a.mp4", 200)
+    # 放一个损坏缓存（只有半截 npy 头、无数据），模拟上次 np.save 写一半崩了
+    cache = feature_cache_path(training, "a.mp4"); cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"\x93NUMPY\x01\x00short")
+    feat = extract_and_cache(clips / "a.mp4", training, _FakeExtractor(8), dim=8)
+    assert feat is not None and feat.shape == (8,)        # 没崩，重抽成功
+    # 覆盖成了合法缓存，再读一次正常
+    feat2 = extract_and_cache(clips / "a.mp4", training, _FakeExtractor(8), dim=8)
+    assert feat2.shape == (8,)

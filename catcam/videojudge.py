@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import io
+import os
 from pathlib import Path
 
 import cv2
@@ -83,17 +85,20 @@ class DrinkingHead:
         return bool(p >= 0.5), float(p)
 
     def save(self, path) -> None:
+        # 经 BytesIO + 原子替换：绕开 numpy 的 FILE*(tofile) 路径（守护进程/3.14 线程里会失败、
+        # 把文件写一半留成损坏头），且写入是原子的、文件名就是传入的 path（不靠 .npz 自动补后改名）。
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(path, weight=self._w, bias=np.float32(self._b),
+        buf = io.BytesIO()
+        np.savez(buf, weight=self._w, bias=np.float32(self._b),
                  mean=self._mean, std=self._std)
-        appended = Path(str(path) + ".npz")        # np.savez 对无 .npz 的路径会自动补
-        if appended.exists() and appended != path:
-            appended.rename(path)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(buf.getvalue())
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path) -> "DrinkingHead":
-        with np.load(str(path)) as d:
+        with np.load(io.BytesIO(Path(path).read_bytes())) as d:
             return cls(d["weight"], float(d["bias"]), d["mean"], d["std"])
 
 
