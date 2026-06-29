@@ -145,3 +145,38 @@ def test_label_skips_human_labeled(tmp_path):
     assert lab.label(clip) is None
     assert client.calls == 0  # 没调模型
     assert store.label_source("c.mp4") == "human"  # 未被覆盖
+
+
+def test_call_retries_pool_after_backoff(tmp_path):
+    # 整池第一轮全挂、退避后第二轮成功 → 不该 fail-open 丢掉这段
+    clip = tmp_path / "r.mp4"; _make_clip(clip)
+    store = _store(tmp_path)
+    client = _FakeClient('{"drinking": true, "confidence": 0.9, "reason": "舔水"}', fail_times=1)
+    slept = []
+    lab = AILabeler(store, tmp_path / "training", "m", frames=3, client=client,
+                    sleep=lambda s: slept.append(s), retries=3, retry_base=5.0)
+    out = lab.label(clip)
+    assert out["drinking"] is True
+    assert client.calls == 2            # 第1次失败、退避后第2次成功
+    assert slept == [5.0]               # 两轮之间退避一次
+
+
+def test_call_handles_empty_choices(tmp_path):
+    # 某模型返回 choices=None（部分 provider 的错误响应）→ 当失败换下一个，不崩 NoneType
+    clip = tmp_path / "e.mp4"; _make_clip(clip)
+    store = _store(tmp_path)
+
+    class _NoneChoicesThenGood:
+        def __init__(self):
+            self.calls = 0
+            self.chat = type("Chat", (), {"completions": self})()
+        def create(self, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                return type("R", (), {"choices": None})()      # 空 choices
+            return _FakeResp('{"drinking": false}')
+    client = _NoneChoicesThenGood()
+    lab = AILabeler(store, tmp_path / "training", ["a", "b"], frames=3, client=client,
+                    sleep=lambda s: None, retries=2)
+    out = lab.label(clip)
+    assert out["drinking"] is False and client.calls == 2

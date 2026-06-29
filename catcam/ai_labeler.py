@@ -76,7 +76,7 @@ class AILabeler:
     """
 
     def __init__(self, store, training_dir, model, frames=3, client=None,
-                 train_frames=5, sleep=time.sleep, log=print):
+                 train_frames=5, sleep=time.sleep, log=print, retries=3, retry_base=5.0):
         self.store = store
         self.training_dir = Path(training_dir)
         # model 可传单个字符串或一组模型；组成「模型池」做轮换 + 兜底。
@@ -86,6 +86,9 @@ class AILabeler:
         self.train_frames = train_frames
         self.sleep = sleep
         self.log = log
+        # 整池都失败时再重试几轮（免费模型常一阵子全 429）：retries 轮、轮间指数退避 retry_base*2^k 秒。
+        self.retries = max(1, retries)
+        self.retry_base = retry_base
         self._rr = 0                       # 轮换起始下标
         self._rr_lock = threading.Lock()
 
@@ -109,21 +112,29 @@ class AILabeler:
         return cls(store, cfg.training_dir, models, frames=cfg.ai_label_frames, client=client)
 
     def _call(self, messages) -> str:
-        """在模型池里轮换起始、顺位兜底：每次换个起点分摊额度，某个失败就试下一个，全失败才抛。"""
+        """模型池轮换 + 顺位兜底 + 整池失败退避重试：每次换起点分摊额度，某模型失败试下一个；
+        一整轮都失败就退避后再来一轮（免费模型常一阵子全 429），重试 self.retries 轮仍失败才抛。"""
         n = len(self.models)
-        with self._rr_lock:
-            start = self._rr
-            self._rr = (self._rr + 1) % n
         last = None
-        for i in range(n):
-            model = self.models[(start + i) % n]
-            try:
-                resp = self.client.chat.completions.create(model=model, messages=messages)
-                return resp.choices[0].message.content
-            except Exception as e:  # noqa: BLE001
-                last = e
-                if i < n - 1:
+        for attempt in range(self.retries):
+            with self._rr_lock:
+                start = self._rr
+                self._rr = (self._rr + 1) % n
+            for i in range(n):
+                model = self.models[(start + i) % n]
+                try:
+                    resp = self.client.chat.completions.create(model=model, messages=messages)
+                    choices = getattr(resp, "choices", None)
+                    if not choices:   # 部分 provider 错误响应里 choices=None/空，别让 [0] 崩成 NoneType
+                        raise RuntimeError("返回空 choices")
+                    return choices[0].message.content
+                except Exception as e:  # noqa: BLE001
+                    last = e
                     self.log(f"模型 {model} 调用失败（{e}），换下一个")
+            if attempt < self.retries - 1:   # 整池这轮全挂 → 退避后再来一轮
+                wait = self.retry_base * (2 ** attempt)
+                self.log(f"整池都失败（第 {attempt + 1}/{self.retries} 轮），等 {wait:.0f}s 重试")
+                self.sleep(wait)
         raise last
 
     def label(self, clip_path) -> dict | None:

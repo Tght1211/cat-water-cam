@@ -116,3 +116,19 @@ def test_extract_and_cache_self_heals_corrupt(tmp_path):
     # 覆盖成了合法缓存，再读一次正常
     feat2 = extract_and_cache(clips / "a.mp4", training, _FakeExtractor(8), dim=8)
     assert feat2.shape == (8,)
+
+
+def test_gather_uses_cache_after_clip_pruned(tmp_path):
+    # 喝水正样本难攒的一个原因：clip 被 max_clips 裁掉。但特征缓存(~4KB)应保住这条正样本。
+    clips = tmp_path / "clips"; clips.mkdir()
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    _clip(clips / "drink.mp4", 200); store.label_clip(clips / "drink.mp4", True)
+    # 先缓存它的特征（模拟之前训练过一次）
+    from catcam.video_trainer import extract_and_cache, feature_cache_path
+    extract_and_cache(clips / "drink.mp4", training, _FakeExtractor(8), dim=8)
+    assert feature_cache_path(training, "drink.mp4").exists()
+    # 现在 clip 文件被裁掉了
+    (clips / "drink.mp4").unlink()
+    X, y, names = gather_dataset(clips, training, store, _FakeExtractor(8), dim=8)
+    assert "drink.mp4" in names and 1 in y     # 靠缓存仍计入这条正样本

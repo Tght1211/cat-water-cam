@@ -77,10 +77,10 @@ def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE
     clips_dir = Path(clips_dir)
     X, y, names = [], [], []
     for name, label in _labeled_clips(store):
-        clip = clips_dir / name
-        if not clip.exists():
-            continue
-        feat = extract_and_cache(clip, training_dir, extractor, dim)
+        # 不预判 clip 是否存在：extract_and_cache 先看特征缓存——clip 即便被 max_clips 裁掉，
+        # 只要特征缓存(~4KB)还在就保住这条样本（喝水正样本稀少，绝不能因裁剪丢）。
+        # 既无缓存、clip 也没了 → extract_and_cache 返回 None，跳过。
+        feat = extract_and_cache(clips_dir / name, training_dir, extractor, dim)
         if feat is None:
             continue
         X.append(feat); y.append(label); names.append(name)
