@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -350,6 +350,8 @@ main{padding:30px 0 90px}
 首次要为每段抽特征，可能几分钟；看报告里的<b>喝水召回</b>（样本不平衡时 top1 会骗人）。
 训完产出 vN 版本、<b>不自动生效</b>，去下面设为生效（切视频模型需重启采集进程）。每类需 ≥4 段。</p>
 <button id="trainVideoBtn" class="btn" onclick="trainVideo()">训练视频模型</button>
+<label style="margin-left:12px;font-size:13px;color:#86868b;cursor:pointer"><input type="checkbox" id="trainVideoRebuild"> 从头重建（忽略特征缓存，更慢但更彻底）</label>
+<div class="mmeta" style="margin-top:6px">每次训练都在<b>全部</b>已标注样本上从头训一个新模型（非增量）。「从头重建」额外强制为每段重抽 s3d 特征。</div>
 <div class="t-status" id="trainVideoStatus"></div>
 </div></div>
 <div class="card"><div class="card-h">当前生效模型</div><div class="card-b">
@@ -558,7 +560,9 @@ async function pollTrain(){
 let trainVideoTimer=null;
 function fmtPct(a){return (typeof a==='number')?(a*100).toFixed(0)+'%':'—';}
 async function trainVideo(){
-  const r=await (await fetch('/api/train_video',{method:'POST'})).json();
+  const rebuild=!!($('#trainVideoRebuild')&&$('#trainVideoRebuild').checked);
+  const r=await (await fetch('/api/train_video',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({rebuild})})).json();
   if(!r.started&&r.error){$('#trainVideoStatus').textContent=r.error;return;}
   pollTrainVideo();
 }
@@ -700,10 +704,11 @@ def create_app(
         return s
 
     @app.post("/api/train_video")
-    def train_video():
+    def train_video(body: dict = Body(default={})):
         if video_trainer is None:
             return JSONResponse({"started": False, "error": "本入口未启用视频训练"})
-        started = video_trainer.start()
+        rebuild = bool((body or {}).get("rebuild"))   # 从头重建：忽略缓存、强制重抽特征
+        started = video_trainer.start(rebuild=rebuild)
         return JSONResponse({"started": started,
                              "error": None if started else "已经在训练中"})
 

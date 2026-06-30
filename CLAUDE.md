@@ -48,7 +48,7 @@ python3 -m venv .venv
 - **触发逻辑全在 `detector.py`（`DrinkingDetector`）**，是个纯时间状态机（`_dwell_start` / `_cooldown_until`），不碰图像 —— 改触发行为先看这里。`pipeline.py` 只负责把"猫是否在碗里"这个布尔喂进去。
 - **采集与检测解耦**（为了预览流畅）：`app.py` 起一个**采集线程**全速读相机 → 更新 `LatestFrame`（预览用）+ 按 `fps` 节奏喂 `FrameBuffer`；**主线程是检测循环**，按 `detect_interval_seconds` 取最新帧跑 YOLO，把「猫是否在碗」写进 `Presence`。慢的推理不再拖累出图/录制。`FrameBuffer` 因此加了锁。网页实时画面走 **MJPEG**（`/stream.mjpg`，单连接连续推帧），不是刷快照。
 - **整段会话录制（默认）**：`session.py` 的 `DrinkSession` 是状态机——猫在碗持续 `dwell_seconds` → 开录（先把 `FrameBuffer` 里「凑近过程 + dwell」写进去做 pre-roll）→ 猫还在就一直写 → 离开持续 `session_end_grace_seconds`（或到 `max_session_seconds` 封顶）→ 收尾存盘。**写帧只在采集线程**（按 fps 节奏，writer fps 一致播放速度才对），检测线程只更新 `Presence`。`record_session=False` 退回旧的「固定 `clip_seconds` 缓冲 dump」（`Pipeline.detect`）。会话录制时缓冲开到 `preroll+dwell` 秒。
-- **编码必须 H.264(`avc1`)**——`recorder.open_writer` 先试 avc1 再退回 mp4v；mp4v 浏览器 `<video>` 播不了（黑屏 0:00），网页要播就得 avc1。`prune_dir` 只留最近 `max_clips` 段。
+- **编码必须 H.264(`avc1`)**——`recorder.open_writer` 先试 avc1 再退回 mp4v；mp4v 浏览器 `<video>` 播不了（黑屏 0:00），网页要播就得 avc1。`prune_dir` 保留最多 `max_clips` 段（默认 1000），**标注感知裁剪**：超量时从最旧开始**只删被判「没喝」的段**（`app.py` 注入 `is_deletable=lambda n: feedback.get_label(n) is False`），**喝水/未判定永不自动删**。没喝段的训练价值（抽帧 + s3d 特征缓存）已另存，删 mp4 不影响训练。
 - **几何判定与 YOLO 解耦**：`geometry.py` 用 0–1 比例的 `bowl_roi`（与分辨率无关），`ratio_rect_to_pixels` 按当前帧尺寸换算；`cat_overlaps_bowl` 用 `交集 / 水碗面积 >= min_overlap_ratio` 判猫是否在碗里。
 - **两个 SQLite 表，同一个 `data/catcam.db`**：`StatsStore`→`events`（喝水事件），`FeedbackStore`→`labels`（人工标注）。每次连接都新开 `sqlite3.connect`，无连接池。
 - **标注即产训练数据**：`FeedbackStore.label_clip` 写 `labels` 表的同时，把该段 mp4 抽帧到 `data/training/{drinking,not_drinking}/`。
@@ -83,6 +83,9 @@ python3 -m venv .venv
   transformers）；小头一层 logistic（免 sklearn）；特征按 clip 缓存进 `data/training/features/*.npy`。
   - **类别不平衡下别看 top1**：训练报告同时给「喝水召回/精确」+「全猜没喝」基线——喝水样本少时 top1 会被多数类
     带高（实测 10 喝/90 没喝时 top1 84% 却低于 96% 基线、喝水召回 0%）。**要等 VLM 攒够足量「喝水」正样本**。
+  - **每次训练都是全量从头训**（非增量）：`train_video_head` 在**所有**已标注样本上重训一个新头；特征缓存只为
+    跳过重复抽取（s3d 确定性、结果一致）。网页「训练视频模型」可勾**「从头重建」**（`{rebuild:true}` →
+    `extract_and_cache(force=True)`）强制忽略缓存、为每段重抽特征（mp4 被裁掉的退回缓存）。
   - **网页一键训练**：训练页有「训练视频模型」按钮（`/api/train_video` → `VideoTrainingManager` 后台线程），
     与旧的单帧「开始训练」（`/api/train` → `TrainingManager`）**并存**；状态/版本走 `/api/train_video/status`，
     报告里突出**喝水召回**（不平衡时 top1 会骗人）。也可命令行 `python -m catcam.video_train`。

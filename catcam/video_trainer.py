@@ -42,20 +42,27 @@ def _load_npy(path: Path) -> np.ndarray:
     return np.load(io.BytesIO(Path(path).read_bytes()))
 
 
-def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM):
+def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM, force: bool = False):
     """取一段的特征：命中缓存直接读，否则抽帧→提取→存缓存。抽帧空返回 None。
 
     缓存损坏/截断（上次写一半崩了）当作未命中：重抽并覆盖（自愈）。
+    force=True（从头重建）：忽略缓存、强制重抽并覆盖——但 mp4 已被裁掉时仍退回缓存（缓存是唯一副本）。
     """
     clip_path = Path(clip_path)
     cache = feature_cache_path(training_dir, clip_path.name)
-    if cache.exists():
+    if not force and cache.exists():
         try:
             return _load_npy(cache)
         except Exception:  # noqa: BLE001 —— 损坏缓存不致命：重抽覆盖
             pass
     frames = read_clip_frames(clip_path)
     if not frames:
+        # mp4 不在了（多半被 max_clips 裁掉）：force 也只能退回缓存
+        if cache.exists():
+            try:
+                return _load_npy(cache)
+            except Exception:  # noqa: BLE001
+                return None
         return None
     feat = np.asarray(extractor.extract(frames), np.float32).reshape(-1)
     _save_npy(cache, feat)
@@ -72,15 +79,18 @@ def _labeled_clips(store) -> list[tuple[str, int]]:
     return [(name, int(v)) for name, v in rows]
 
 
-def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE_DIM):
-    """对每个有标注且 clip 文件还在的段，取特征 + 标签。返回 (X, y, names)。"""
+def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE_DIM, force: bool = False):
+    """对每个有标注且 clip 文件还在的段，取特征 + 标签。返回 (X, y, names)。
+
+    force=True：从头重建——对还有 mp4 的段强制重抽特征（被裁掉的退回缓存）。
+    """
     clips_dir = Path(clips_dir)
     X, y, names = [], [], []
     for name, label in _labeled_clips(store):
         # 不预判 clip 是否存在：extract_and_cache 先看特征缓存——clip 即便被 max_clips 裁掉，
         # 只要特征缓存(~4KB)还在就保住这条样本（喝水正样本稀少，绝不能因裁剪丢）。
         # 既无缓存、clip 也没了 → extract_and_cache 返回 None，跳过。
-        feat = extract_and_cache(clips_dir / name, training_dir, extractor, dim)
+        feat = extract_and_cache(clips_dir / name, training_dir, extractor, dim, force=force)
         if feat is None:
             continue
         X.append(feat); y.append(label); names.append(name)
@@ -91,10 +101,14 @@ def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE
 
 def train_video_head(clips_dir, training_dir, store, registry, models_dir,
                      extractor=None, dim: int = FEATURE_DIM, epochs: int = 300,
-                     val_ratio: float = 0.25, seed: int = 0, created_ts: float = 0.0) -> dict:
-    """训头并登记版本。数据不够 raise ValueError。返回 {version, top1, counts}。"""
+                     val_ratio: float = 0.25, seed: int = 0, created_ts: float = 0.0,
+                     rebuild: bool = False) -> dict:
+    """训头并登记版本。数据不够 raise ValueError。返回 {version, top1, counts}。
+
+    无论 rebuild 与否，都在**全部已标注**样本上从头训一个新头（不增量）；rebuild 只额外强制重抽特征。
+    """
     extractor = extractor or S3DFeatureExtractor()
-    X, y, names = gather_dataset(clips_dir, training_dir, store, extractor, dim)
+    X, y, names = gather_dataset(clips_dir, training_dir, store, extractor, dim, force=rebuild)
     counts = {"drinking": int((y == 1).sum()), "not_drinking": int((y == 0).sum())}
     too_few = [c for c in ("drinking", "not_drinking") if counts[c] < MIN_PER_CLASS]
     if too_few:
@@ -151,6 +165,7 @@ class VideoTrainingManager:
         self._state = "idle"   # idle | running | done | error
         self._detail = ""
         self._result: dict | None = None
+        self._rebuild = False  # 本次是否从头重建特征缓存
 
     def status(self) -> dict:
         with self._lock:
@@ -160,12 +175,14 @@ class VideoTrainingManager:
             base["active"] = self.registry.active_id()
         return base
 
-    def start(self) -> bool:
+    def start(self, rebuild: bool = False) -> bool:
         with self._lock:
             if self._state == "running":
                 return False
             self._state = "running"
-            self._detail = "训练中…（首次要为每段抽 s3d 特征，可能要几分钟）"
+            self._rebuild = rebuild
+            self._detail = ("从头重建特征 + 训练中…（要为每段重抽 s3d 特征，更慢）" if rebuild
+                            else "训练中…（首次要为每段抽 s3d 特征，可能要几分钟）")
             self._result = None
         threading.Thread(target=self._run, daemon=True).start()
         return True
@@ -175,6 +192,7 @@ class VideoTrainingManager:
             res = train_video_head(
                 self.clips_dir, self.training_dir, self.feedback, self.registry, self.models_dir,
                 extractor=self._extractor, dim=self._dim, epochs=self._epochs, created_ts=time.time(),
+                rebuild=self._rebuild,
             )
             detail = (f"完成 {res['version']} · 喝水召回 {_pct(res['drinking_recall'])} "
                       f"精确 {_pct(res['drinking_precision'])}（top1 {_pct(res['top1'])}，"

@@ -132,3 +132,47 @@ def test_gather_uses_cache_after_clip_pruned(tmp_path):
     (clips / "drink.mp4").unlink()
     X, y, names = gather_dataset(clips, training, store, _FakeExtractor(8), dim=8)
     assert "drink.mp4" in names and 1 in y     # 靠缓存仍计入这条正样本
+
+
+class _ValExtractor:
+    def __init__(self, v): self.v = v
+    def extract(self, frames):
+        import numpy as np
+        return np.full(8, self.v, np.float32)
+
+
+def test_extract_and_cache_force_reextracts(tmp_path):
+    from catcam.video_trainer import extract_and_cache
+    clips = tmp_path / "clips"; clips.mkdir(); training = tmp_path / "training"
+    _clip(clips / "a.mp4", 200)
+    assert extract_and_cache(clips / "a.mp4", training, _ValExtractor(1.0), dim=8)[0] == 1.0
+    # 不 force：读旧缓存(1.0)，即便换了提取器
+    assert extract_and_cache(clips / "a.mp4", training, _ValExtractor(9.0), dim=8)[0] == 1.0
+    # force：重抽得新值(9.0)并覆盖缓存
+    assert extract_and_cache(clips / "a.mp4", training, _ValExtractor(9.0), dim=8, force=True)[0] == 9.0
+    assert extract_and_cache(clips / "a.mp4", training, _ValExtractor(0.0), dim=8)[0] == 9.0
+
+
+def test_force_falls_back_to_cache_when_clip_pruned(tmp_path):
+    from catcam.video_trainer import extract_and_cache
+    clips = tmp_path / "clips"; clips.mkdir(); training = tmp_path / "training"
+    _clip(clips / "a.mp4", 200)
+    extract_and_cache(clips / "a.mp4", training, _FakeExtractor(8), dim=8)
+    (clips / "a.mp4").unlink()                      # mp4 被裁掉
+    f = extract_and_cache(clips / "a.mp4", training, _FakeExtractor(8), dim=8, force=True)
+    assert f is not None and f.shape == (8,)        # force 也退回缓存（唯一副本）
+
+
+def test_train_video_head_rebuild_ok(tmp_path):
+    from catcam.models import ModelRegistry
+    clips = tmp_path / "clips"; clips.mkdir(); training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    for i in range(6):
+        _clip(clips / f"p{i}.mp4", 200); store.label_clip(clips / f"p{i}.mp4", True)
+    for i in range(6):
+        _clip(clips / f"n{i}.mp4", 10); store.label_clip(clips / f"n{i}.mp4", False)
+    registry = ModelRegistry(tmp_path / "models" / "registry.json")
+    res = train_video_head(clips, training, store, registry, tmp_path / "models",
+                           extractor=_FakeExtractor(8), dim=8, epochs=100,
+                           created_ts=1.0, rebuild=True)
+    assert res["version"] == "v1"

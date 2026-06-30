@@ -148,8 +148,8 @@ def test_activate_s3d_head_version_does_not_500(tmp_path):
 
 
 class _FakeVideoTrainer:
-    def __init__(self): self.started = 0; self._state = "idle"
-    def start(self): self.started += 1; self._state = "running"; return True
+    def __init__(self): self.started = 0; self._state = "idle"; self.last_rebuild = None
+    def start(self, rebuild=False): self.started += 1; self.last_rebuild = rebuild; self._state = "running"; return True
     def status(self): return {"state": self._state, "detail": "x", "result": None,
                               "models": [], "active": None}
 
@@ -163,9 +163,20 @@ def test_train_video_endpoints(tmp_path):
     vt = _FakeVideoTrainer()
     app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir, video_trainer=vt)
     client = TestClient(app)
-    assert client.post("/api/train_video").json()["started"] is True
-    assert vt.started == 1
+    assert client.post("/api/train_video").json()["started"] is True   # 无 body → rebuild=False
+    assert vt.started == 1 and vt.last_rebuild is False
     assert client.get("/api/train_video/status").json()["state"] == "running"
+
+
+def test_train_video_rebuild_flag(tmp_path):
+    stats = StatsStore(tmp_path / "s.db")
+    recorder = ClipRecorder(clips_dir=tmp_path / "clips", max_clips=10, fps=5)
+    feedback = FeedbackStore(db_path=tmp_path / "f.db", training_dir=tmp_path / "train")
+    vt = _FakeVideoTrainer()
+    app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir, video_trainer=vt)
+    client = TestClient(app)
+    assert client.post("/api/train_video", json={"rebuild": True}).json()["started"] is True
+    assert vt.last_rebuild is True
 
 
 def test_train_video_disabled_when_not_wired(tmp_path):
