@@ -23,17 +23,37 @@ def open_writer(path: Path, fps: int, size: tuple[int, int]):
     raise RuntimeError(f"VideoWriter 打不开 {path}（avc1/mp4v 都不可用？）")
 
 
-def prune_dir(clips_dir: Path, max_clips: int) -> None:
-    clips = sorted(clips_dir.glob("clip_*.mp4"))
-    for old in clips[:-max_clips] if max_clips > 0 else clips:
-        old.unlink()
+def prune_dir(clips_dir: Path, max_clips: int, is_deletable=None) -> None:
+    """保留最多 max_clips 段。超量时**从最旧开始、只删「可删」的**段，删够为止。
+
+    is_deletable(clip_name)->bool：哪些段允许被裁掉（如只删「没喝」）。None=任意旧段都可删（旧行为）。
+    受保护的段（喝水/未判定）即便最旧也不删——宁可超出上限也保住它们。
+    """
+    clips = sorted(clips_dir.glob("clip_*.mp4"))   # 旧→新
+    if max_clips <= 0:
+        for old in clips:
+            old.unlink()
+        return
+    over = len(clips) - max_clips
+    if over <= 0:
+        return
+    deletable = is_deletable or (lambda name: True)
+    removed = 0
+    for p in clips:               # 最旧优先
+        if removed >= over:
+            break
+        if deletable(p.name):
+            p.unlink()
+            removed += 1
 
 
 class ClipRecorder:
-    def __init__(self, clips_dir: Path, max_clips: int, fps: int):
+    def __init__(self, clips_dir: Path, max_clips: int, fps: int, is_deletable=None):
         self.clips_dir = Path(clips_dir)
         self.max_clips = max_clips
         self.fps = fps
+        # 裁剪时哪些段可删（如只删「没喝」）；None=旧行为（删最旧）。
+        self.is_deletable = is_deletable
         self.clips_dir.mkdir(parents=True, exist_ok=True)
 
     def save_clip(self, frames: list, timestamp: float) -> Path:
@@ -47,7 +67,7 @@ class ClipRecorder:
                 writer.write(f)
         finally:
             writer.release()
-        prune_dir(self.clips_dir, self.max_clips)
+        prune_dir(self.clips_dir, self.max_clips, self.is_deletable)
         return path
 
     def list_clips(self) -> list[Path]:

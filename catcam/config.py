@@ -21,7 +21,8 @@ class Config:
     dwell_seconds: float = 3.0
     cooldown_seconds: float = 60.0
     clip_seconds: float = 4.0
-    max_clips: int = 100
+    # 最多保留多少段视频；超量时优先删最旧的「没喝」，喝水/未判定永不自动删（见 recorder.prune_dir）。
+    max_clips: int = 1000
     # 整段会话录制：从猫开始喝到离开都录下来（变长），而非固定 clip_seconds。
     record_session: bool = True
     preroll_seconds: float = 3.0          # 触发前补录这么久（猫凑近的过程）

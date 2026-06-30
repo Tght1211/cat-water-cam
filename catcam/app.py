@@ -96,6 +96,9 @@ def main(config_path: str = "config.json") -> None:
     stats = StatsStore(cfg.db_path)
     recorder = ClipRecorder(cfg.clips_dir, cfg.max_clips, cfg.fps)
     feedback = FeedbackStore(cfg.db_path, cfg.training_dir)
+    # 裁剪口径：超量时只删被判「没喝」的段（喝水/未判定永不自动删）。
+    # 没喝段的训练价值（抽帧 + s3d 特征缓存）已另存，删 mp4 不影响训练。
+    recorder.is_deletable = lambda name: feedback.get_label(name) is False
     ai_labeler = AILabeler.from_config(feedback, cfg)  # 未启用/缺 key 返回 None
     if ai_labeler is not None:
         print(f"AI 自动标注已开启 → {cfg.ai_model}（⚠️ 画面帧会上传外部服务器）")

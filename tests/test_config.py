@@ -5,7 +5,7 @@ from catcam.config import Config, load_config
 
 def test_defaults_have_expected_values():
     c = Config()
-    assert c.max_clips == 100
+    assert c.max_clips == 1000
     assert c.bowl_roi == (0.3, 0.3, 0.7, 0.7)
     assert c.fps == 10
     assert c.video_source == ""
@@ -23,9 +23,9 @@ def test_load_config_creates_default_file_when_missing(tmp_path):
     cfg_path = tmp_path / "config.json"
     c = load_config(cfg_path)
     assert cfg_path.exists()
-    assert c.max_clips == 100
+    assert c.max_clips == 1000
     on_disk = json.loads(cfg_path.read_text())
-    assert on_disk["max_clips"] == 100
+    assert on_disk["max_clips"] == 1000
 
 
 def test_load_config_reads_existing_overrides(tmp_path):
