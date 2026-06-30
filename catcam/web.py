@@ -341,21 +341,14 @@ main{padding:30px 0 90px}
 <div class="kpi"><div class="k-top"><span class="k-ico" id="ict1"></span>待标注</div><div class="k-val"><span id="dsUn">–</span><small>段</small></div></div>
 <div class="kpi"><div class="k-top"><span class="k-ico" id="ict2"></span>已标注·未训练</div><div class="k-val"><span id="dsNew">–</span><small>段</small></div></div>
 <div class="kpi"><div class="k-top"><span class="k-ico" id="ict3"></span>已标注·已训练</div><div class="k-val"><span id="dsTr">–</span><small>段</small></div></div>
-<div class="kpi"><div class="k-top"><span class="k-ico" id="ict4"></span>训练样本 👍/👎</div><div class="k-val" style="font-size:30px" id="dsBal">–</div><div class="mmeta" style="margin-top:6px">抽帧张数</div></div>
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ict4"></span>标注 👍/👎</div><div class="k-val" style="font-size:30px" id="dsBal">–</div><div class="mmeta" style="margin-top:6px">段（每类需 ≥4）</div></div>
 </div>
 <div class="train-grid">
 <div class="card"><div class="card-b">
-<p>对「视频」里每段点 👍真喝水 / 👎没喝攒样本；这里把<b>未训练</b>的标注练成新版本分类器
-（用 <code>data/training</code> 下所有抽帧，产出 vN 版本与验证集准确率）。已训练过、没有新标注就不会重复练。</p>
-<button id="trainBtn" class="btn" onclick="train()">开始训练</button>
-<div class="t-status" id="trainStatus"></div>
-<div class="t-prog" id="trainProg" style="display:none">
-<div class="t-line"><span id="tpLabel"></span><b id="tpEta"></b></div>
-<div class="t-bar" id="tpBar"><i></i></div>
-</div>
-<hr style="border:none;border-top:1px solid #eee;margin:16px 0">
-<p>或训练<b>看动作</b>的视频模型（s3d 冻结特征 + 小头）——单帧分类器看不出「舔水」这个<b>动作</b>，这是它弱的根因。
-首次要为每段抽特征，可能几分钟；看报告里的<b>喝水召回</b>（样本不平衡时 top1 会骗人）。训完不自动生效，去下面设为生效（切视频模型需重启采集进程）。</p>
+<p>对「视频」里每段点 👍真喝水 / 👎没喝攒样本；这里训一个<b>看动作</b>的视频模型
+（s3d 冻结特征 + 小头）——喝水是「舔水」这个<b>动作</b>，单帧图片看不出，所以用整段视频。
+首次要为每段抽特征，可能几分钟；看报告里的<b>喝水召回</b>（样本不平衡时 top1 会骗人）。
+训完产出 vN 版本、<b>不自动生效</b>，去下面设为生效（切视频模型需重启采集进程）。每类需 ≥4 段。</p>
 <button id="trainVideoBtn" class="btn" onclick="trainVideo()">训练视频模型</button>
 <div class="t-status" id="trainVideoStatus"></div>
 </div></div>
@@ -548,53 +541,16 @@ async function fb(clip,is){
 }
 
 /* 训练 */
-let trainTimer=null;
-async function train(){
-  const r=await (await fetch('/api/train',{method:'POST'})).json();
-  if(!r.started&&r.error){$('#trainStatus').textContent=r.error;return;}
-  pollTrain();
-}
 function fmtAcc(a){return (typeof a==='number')?(a*100).toFixed(1)+'%':'—';}
 function fmtTime(ts){if(!ts)return '';const d=new Date(ts*1000);
   const p=n=>String(n).padStart(2,'0');return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;}
-function fmtEta(sec){if(sec==null||!isFinite(sec))return '';sec=Math.max(0,Math.round(sec));
-  if(sec<60)return `约 ${sec} 秒`;const m=Math.floor(sec/60),s=sec%60;
-  return s?`约 ${m} 分 ${s} 秒`:`约 ${m} 分`;}
-function renderProg(s){
-  const box=$('#trainProg');box.style.display='block';
-  const bar=$('#tpBar'),fill=bar.querySelector('i');
-  if(s.phase==='training'&&s.total_epochs){
-    bar.classList.remove('indet');
-    const pct=Math.round((s.progress||0)*100);
-    fill.style.width=pct+'%';
-    $('#tpLabel').textContent=`训练中 · 第 ${s.epoch||0}/${s.total_epochs} 轮`;
-    const eta=fmtEta(s.eta_seconds);
-    $('#tpEta').textContent=eta?`剩余 ${eta} · ${pct}%`:`${pct}%`;
-  }else{
-    bar.classList.add('indet');fill.style.width='35%';
-    $('#tpLabel').textContent='准备中 · 下载基座权重 / 整理样本…';
-    $('#tpEta').textContent='';
-  }
-}
+/* 载入 KPI + 当前生效模型 + 版本列表（单帧训练已移除，统一用「训练视频模型」）。 */
 async function pollTrain(){
   const s=await (await fetch('/api/train/status')).json();
   const ls=s.label_states||{labeled:0,drinking:0,not_drinking:0,untrained:0,trained:0};
-  const ic=s.image_counts||{drinking:0,not_drinking:0};   // 抽帧张数：训练实际用这个
   $('#dsUn').textContent=(s.unlabeled??'–');
   $('#dsNew').textContent=ls.untrained; $('#dsTr').textContent=ls.trained;
-  $('#dsBal').textContent=`${ic.drinking} / ${ic.not_drinking}`;
-  const btn=$('#trainBtn'),st=$('#trainStatus');
-  const enough=ic.drinking>=4&&ic.not_drinking>=4;
-  if(s.state==='running'){btn.disabled=true;st.textContent=s.detail||'训练中…';
-    renderProg(s);
-    if(!trainTimer)trainTimer=setInterval(pollTrain,1500);}
-  else{
-    if(trainTimer){clearInterval(trainTimer);trainTimer=null;}
-    $('#trainProg').style.display='none';
-    if(!enough){btn.disabled=true;st.textContent=`样本不够：每类至少 4 张抽帧（👍${ic.drinking} / 👎${ic.not_drinking}）`;}
-    else if(ls.untrained===0&&ls.trained>0){btn.disabled=true;st.textContent='暂无新标注，无需重复训练';}
-    else{btn.disabled=false;st.textContent=s.state==='done'?(s.detail||''):(ls.untrained>0?`有 ${ls.untrained} 段新标注可训练`:'');}
-  }
+  $('#dsBal').textContent=`${ls.drinking} / ${ls.not_drinking}`;
   renderActive(s); renderModels(s);
 }
 
@@ -653,7 +609,7 @@ function renderModels(s){
   let html=`<div class="mrow ${!s.active?'on':''}"><div><div class="mv">不启用任何模型</div>
     <div class="mmeta">只用简单模型，宁可多录候选</div></div><div class="grow"></div>
     <button class="mbtn ${!s.active?'cur':'off'}" ${!s.active?'':"onclick=\\"activate(null)\\""}>${!s.active?'生效中':'停用模型'}</button></div>`;
-  if(!models.length){html+=`<div class="empty" style="grid-column:auto">还没有训练过的模型。标注后点上面「开始训练」。</div>`;}
+  if(!models.length){html+=`<div class="empty" style="grid-column:auto">还没有训练过的模型。标注后点上面「训练视频模型」。</div>`;}
   html+=models.map(m=>{const cur=m.id===s.active,ic=m.image_counts||{},lc=m.label_counts||{};
     return `<div class="mrow ${cur?'on':''}"><div><div class="mv">${m.id} <span class="macc">${fmtAcc(m.top1)}</span></div>
       <div class="mmeta">${fmtTime(m.created_ts)} · 抽帧 👍${ic.drinking||0}/👎${ic.not_drinking||0} · 标注 ${lc.labeled||0} 段</div></div>
