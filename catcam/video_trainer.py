@@ -79,21 +79,30 @@ def _labeled_clips(store) -> list[tuple[str, int]]:
     return [(name, int(v)) for name, v in rows]
 
 
-def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE_DIM, force: bool = False):
+def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE_DIM,
+                   force: bool = False, progress_cb=None):
     """对每个有标注且 clip 文件还在的段，取特征 + 标签。返回 (X, y, names)。
 
     force=True：从头重建——对还有 mp4 的段强制重抽特征（被裁掉的退回缓存）。
+    progress_cb（可选）：每处理完一段回调 `{"phase":"extracting","done":k,"total":N}`
+    （done 含被跳过的段，最终必达 total）。回调抛异常会被吞掉，绝不拖累抽取。
     """
     clips_dir = Path(clips_dir)
     X, y, names = [], [], []
-    for name, label in _labeled_clips(store):
+    labeled = _labeled_clips(store)
+    total = len(labeled)
+    for i, (name, label) in enumerate(labeled):
         # 不预判 clip 是否存在：extract_and_cache 先看特征缓存——clip 即便被 max_clips 裁掉，
         # 只要特征缓存(~4KB)还在就保住这条样本（喝水正样本稀少，绝不能因裁剪丢）。
         # 既无缓存、clip 也没了 → extract_and_cache 返回 None，跳过。
         feat = extract_and_cache(clips_dir / name, training_dir, extractor, dim, force=force)
-        if feat is None:
-            continue
-        X.append(feat); y.append(label); names.append(name)
+        if feat is not None:
+            X.append(feat); y.append(label); names.append(name)
+        if progress_cb is not None:
+            try:
+                progress_cb({"phase": "extracting", "done": i + 1, "total": total})
+            except Exception:  # noqa: BLE001 进度回调绝不能拖累抽取
+                pass
     if not X:
         return np.empty((0, dim), np.float32), np.array([], int), []
     return np.vstack(X).astype(np.float32), np.array(y, int), names
@@ -102,17 +111,30 @@ def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE
 def train_video_head(clips_dir, training_dir, store, registry, models_dir,
                      extractor=None, dim: int = FEATURE_DIM, epochs: int = 300,
                      val_ratio: float = 0.25, seed: int = 0, created_ts: float = 0.0,
-                     rebuild: bool = False) -> dict:
+                     rebuild: bool = False, progress_cb=None) -> dict:
     """训头并登记版本。数据不够 raise ValueError。返回 {version, top1, counts}。
 
     无论 rebuild 与否，都在**全部已标注**样本上从头训一个新头（不增量）；rebuild 只额外强制重抽特征。
+    progress_cb（可选）：依次报 `preparing`（加载/下载 s3d）→ `extracting`（逐段，由 gather_dataset 发）
+    → `training`（拟合小头）。回调抛异常会被吞掉。
     """
+    def _emit(info: dict) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(info)
+        except Exception:  # noqa: BLE001 进度回调绝不能拖累训练
+            pass
+
+    _emit({"phase": "preparing"})           # 构造提取器：首次会下载 ~30MB s3d 权重，最慢的「无反馈」段
     extractor = extractor or S3DFeatureExtractor()
-    X, y, names = gather_dataset(clips_dir, training_dir, store, extractor, dim, force=rebuild)
+    X, y, names = gather_dataset(clips_dir, training_dir, store, extractor, dim,
+                                 force=rebuild, progress_cb=progress_cb)
     counts = {"drinking": int((y == 1).sum()), "not_drinking": int((y == 0).sum())}
     too_few = [c for c in ("drinking", "not_drinking") if counts[c] < MIN_PER_CLASS]
     if too_few:
         raise ValueError(f"标注样本不够：当前 {counts}，每类需 ≥{MIN_PER_CLASS}。")
+    _emit({"phase": "training"})             # 特征齐了，拟合 logistic 小头（很快）
     # 确定性留出集：固定种子打乱后取头部 val_ratio 当验证
     rng = np.random.default_rng(seed)
     idx = rng.permutation(len(y))
@@ -166,10 +188,35 @@ class VideoTrainingManager:
         self._detail = ""
         self._result: dict | None = None
         self._rebuild = False  # 本次是否从头重建特征缓存
+        self._phase = ""       # preparing（加载 s3d）| extracting（逐段抽特征）| training（拟合小头）
+        self._done = 0
+        self._total = 0
+
+    def _on_progress(self, info: dict) -> None:
+        phase = info.get("phase")
+        with self._lock:
+            if phase:
+                self._phase = phase
+            if phase == "extracting":
+                self._done = info.get("done", self._done)
+                self._total = info.get("total", self._total)
 
     def status(self) -> dict:
         with self._lock:
             base = {"state": self._state, "detail": self._detail, "result": self._result}
+            if self._state == "running":
+                # 进度主要反映「逐段抽特征」（最耗时）：extracting=done/total；
+                # preparing（下载 s3d）还没法估=0；training（小头）很快=1。
+                if self._phase == "extracting" and self._total:
+                    progress = self._done / self._total
+                elif self._phase == "training":
+                    progress = 1.0
+                else:
+                    progress = 0.0
+                base["phase"] = self._phase
+                base["done"] = self._done
+                base["total"] = self._total
+                base["progress"] = progress
         if self.registry is not None:
             base["models"] = self.registry.list()
             base["active"] = self.registry.active_id()
@@ -184,6 +231,9 @@ class VideoTrainingManager:
             self._detail = ("从头重建特征 + 训练中…（要为每段重抽 s3d 特征，更慢）" if rebuild
                             else "训练中…（首次要为每段抽 s3d 特征，可能要几分钟）")
             self._result = None
+            self._phase = "preparing"
+            self._done = 0
+            self._total = 0
         threading.Thread(target=self._run, daemon=True).start()
         return True
 
@@ -192,7 +242,7 @@ class VideoTrainingManager:
             res = train_video_head(
                 self.clips_dir, self.training_dir, self.feedback, self.registry, self.models_dir,
                 extractor=self._extractor, dim=self._dim, epochs=self._epochs, created_ts=time.time(),
-                rebuild=self._rebuild,
+                rebuild=self._rebuild, progress_cb=self._on_progress,
             )
             detail = (f"完成 {res['version']} · 喝水召回 {_pct(res['drinking_recall'])} "
                       f"精确 {_pct(res['drinking_precision'])}（top1 {_pct(res['top1'])}，"

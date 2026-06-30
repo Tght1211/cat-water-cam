@@ -1,7 +1,29 @@
 import sqlite3
 from datetime import datetime, timedelta
 
-from catcam.stats import StatsStore
+from catcam.stats import StatsStore, bucket_events
+
+
+def test_bucket_events_by_hour_and_weekday():
+    # 2026-06-22 是周一(weekday=0)；构造几条不同小时/星期的事件
+    mon_9 = datetime(2026, 6, 22, 9, 30, 0)      # 周一 9 点
+    mon_9b = datetime(2026, 6, 22, 9, 5, 0)      # 周一 9 点（再来一次）
+    mon_21 = datetime(2026, 6, 22, 21, 0, 0)     # 周一 21 点
+    wed_9 = datetime(2026, 6, 24, 9, 0, 0)       # 周三 9 点
+    events = [{"ts": d.timestamp(), "clip_name": "x"} for d in (mon_9, mon_9b, mon_21, wed_9)]
+    out = bucket_events(events)
+    assert len(out["hourly"]) == 24 and len(out["weekday"]) == 7
+    assert out["hourly"][9] == 3                  # 三条落在 9 点
+    assert out["hourly"][21] == 1
+    assert sum(out["hourly"]) == 4
+    assert out["weekday"][0] == 3                 # 周一 3 条
+    assert out["weekday"][2] == 1                 # 周三 1 条
+    assert sum(out["weekday"]) == 4
+
+
+def test_bucket_events_empty():
+    out = bucket_events([])
+    assert out["hourly"] == [0] * 24 and out["weekday"] == [0] * 7
 
 
 def test_daily_counts_buckets_and_fills_zero(tmp_path):

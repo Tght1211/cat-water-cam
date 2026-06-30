@@ -90,6 +90,46 @@ def test_video_training_manager_runs_and_reports(tmp_path):
     assert s["models"][0]["base"] == "s3d+head"
 
 
+def test_gather_dataset_reports_progress(tmp_path):
+    clips = tmp_path / "clips"; clips.mkdir()
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    for name, drink in [("a.mp4", True), ("b.mp4", True), ("c.mp4", False)]:
+        _clip(clips / name, 200 if drink else 10); store.label_clip(clips / name, drink)
+    seen = []
+    gather_dataset(clips, training, store, _FakeExtractor(8), dim=8,
+                   progress_cb=lambda info: seen.append(info))
+    extracting = [i for i in seen if i["phase"] == "extracting"]
+    assert extracting, "应至少报一次 extracting"
+    assert extracting[-1]["done"] == extracting[-1]["total"] == 3   # 三段处理完
+    assert [i["done"] for i in extracting] == [1, 2, 3]             # 递增
+
+
+def test_video_training_manager_exposes_progress_fields(tmp_path):
+    from catcam.video_trainer import VideoTrainingManager
+    from catcam.models import ModelRegistry
+    clips = tmp_path / "clips"; clips.mkdir()
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    for i in range(6):
+        _clip(clips / f"p{i}.mp4", 200); store.label_clip(clips / f"p{i}.mp4", True)
+    for i in range(6):
+        _clip(clips / f"n{i}.mp4", 10); store.label_clip(clips / f"n{i}.mp4", False)
+    registry = ModelRegistry(tmp_path / "models" / "registry.json")
+    mgr = VideoTrainingManager(clips, training, store, registry, tmp_path / "models",
+                               extractor=_FakeExtractor(8), dim=8, epochs=100)
+    # 运行中（未跑前）状态不应崩；progress 字段在 running 时出现
+    seen_phases = []
+    orig = mgr._on_progress
+    def _spy(info):
+        seen_phases.append(info.get("phase")); orig(info)
+    mgr._on_progress = _spy
+    mgr._run()
+    assert "preparing" in seen_phases and "extracting" in seen_phases and "training" in seen_phases
+    s = mgr.status()
+    assert s["state"] == "done"
+
+
 def test_video_training_manager_error_on_too_few(tmp_path):
     from catcam.video_trainer import VideoTrainingManager
     from catcam.models import ModelRegistry

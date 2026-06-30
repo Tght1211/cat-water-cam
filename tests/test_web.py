@@ -38,6 +38,32 @@ def test_clips_list_includes_label_status(tmp_path):
     assert body["labels"]["clip_1000.mp4"] is None
 
 
+def test_clips_list_reports_max_clips(tmp_path):
+    app, _, recorder, _ = _build(tmp_path)
+    body = TestClient(app).get("/api/clips").json()
+    assert body["max_clips"] == recorder.max_clips == 10
+
+
+def test_stats_trend_shape_and_buckets(tmp_path):
+    app, stats, _, feedback = _build(tmp_path)
+    now = time.time()
+    # 两段确认喝水（同一小时），一段没喝（不计）
+    stats.record_event(now, "clip_a.mp4")
+    stats.record_event(now, "clip_b.mp4")
+    stats.record_event(now, "clip_c.mp4")
+    with sqlite3.connect(stats.db_path) as c:
+        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_a.mp4', 1, NULL)")
+        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_b.mp4', 1, NULL)")
+        c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES ('clip_c.mp4', 0, NULL)")
+    body = TestClient(app).get("/api/stats/trend?days=7").json()
+    assert len(body["days"]) == 7
+    assert len(body["hourly"]) == 24 and len(body["weekday"]) == 7
+    assert body["total"] == 2                      # 只数确认喝水
+    assert sum(body["hourly"]) == 2 and sum(body["weekday"]) == 2
+    assert body["active_days"] == 1
+    assert "prev_total" in body
+
+
 def test_today_stats_counts_recent_event(tmp_path):
     app, stats, *_ = _build(tmp_path)
     stats.record_event(time.time(), "clip_x.mp4")

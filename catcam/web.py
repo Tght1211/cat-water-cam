@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import cv2
@@ -13,7 +13,7 @@ from catcam.charts import trend_png
 from catcam.classifier import DrinkingClassifier
 from catcam.recorder import ClipRecorder
 from catcam.feedback import FeedbackStore
-from catcam.stats import StatsStore, day_bounds
+from catcam.stats import StatsStore, bucket_events, day_bounds
 
 
 def clip_duration(path: Path) -> float:
@@ -152,6 +152,25 @@ main{padding:30px 0 90px}
 .cval{fill:var(--ink);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
 .cxlab{fill:var(--muted);font-size:11px}
 .cbase{stroke:var(--line);stroke-width:1}
+/* 趋势页：环比 + 两张并排小图 */
+.card-h-note{font-weight:500;text-transform:none;letter-spacing:0;color:var(--accent)}
+.delta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:2px 2px 18px;
+  color:var(--muted);font-size:13.5px;font-variant-numeric:tabular-nums}
+.delta b{color:var(--ink);font-weight:600;font-size:15px}
+.delta .up{color:var(--green);font-weight:600} .delta .down{color:var(--red);font-weight:600}
+.delta .flat{color:var(--muted);font-weight:600}
+.mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px}
+@media (max-width:760px){.mini-grid{grid-template-columns:1fr}}
+/* 训练进度条 */
+.pbar{margin-top:14px}
+.pbar-track{height:9px;border-radius:980px;background:var(--bg);border:1px solid var(--line);
+  overflow:hidden;position:relative}
+.pbar-fill{height:100%;border-radius:980px;background:linear-gradient(90deg,var(--accent2),var(--accent))}
+.pbar-fill.det{transition:width .45s cubic-bezier(.22,1,.36,1)}
+.pbar-fill.indet{position:absolute;left:0;width:34%;animation:indet 1.15s ease-in-out infinite}
+@keyframes indet{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}
+.pbar-lab{display:flex;justify-content:space-between;gap:10px;margin-top:9px;
+  font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* 视频：筛选 + 懒加载缩略图 */
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
@@ -315,16 +334,26 @@ main{padding:30px 0 90px}
 <button class="on" onclick="setRange(7,this)">近 7 天</button>
 <button onclick="setRange(30,this)">近 30 天</button>
 </div></div>
-<div class="card"><div class="card-b">
-<div class="trend-sum" id="trendSum"></div>
+<div class="kpis">
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt1"></span>期间总计</div><div class="k-val"><span id="tkTotal">–</span><small>次</small></div></div>
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt2"></span>日均</div><div class="k-val"><span id="tkAvg">–</span><small>次</small></div></div>
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt3"></span>单日最多</div><div class="k-val"><span id="tkMax">–</span><small>次</small></div></div>
+<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt4"></span>活跃天数</div><div class="k-val" id="tkActive">–</div><div class="mmeta" style="margin-top:6px">有喝水记录的天数</div></div>
+</div>
+<div class="delta" id="trendDelta"></div>
+<div class="card"><div class="card-h">每日喝水次数</div><div class="card-b">
 <div class="chartwrap" id="chart"></div>
 </div></div>
+<div class="mini-grid">
+<div class="card"><div class="card-h">时段分布 <span class="card-h-note" id="hourPeak"></span></div><div class="card-b"><div class="chartwrap" id="chartHour"></div></div></div>
+<div class="card"><div class="card-h">星期分布 <span class="card-h-note" id="wdPeak"></span></div><div class="card-b"><div class="chartwrap" id="chartWeekday"></div></div></div>
+</div>
 </section>
 
 <!-- 视频 -->
 <section id="tab-clips" class="tab">
 <div class="head"><div><h2>喝水视频</h2><p>点缩略图播放 · 点 👍/👎 标注攒训练数据</p></div>
-<div class="right">最多保留 100 段</div></div>
+<div class="right" id="clipsCap" style="max-width:280px;text-align:right;line-height:1.5">最多保留 1000 段</div></div>
 <div class="toolbar" id="filters">
 <button class="fchip on" onclick="setFilter('all',this)">全部</button>
 <button class="fchip" onclick="setFilter('none',this)">未标注</button>
@@ -352,6 +381,7 @@ main{padding:30px 0 90px}
 <button id="trainVideoBtn" class="btn" onclick="trainVideo()">训练视频模型</button>
 <label style="margin-left:12px;font-size:13px;color:#86868b;cursor:pointer"><input type="checkbox" id="trainVideoRebuild"> 从头重建（忽略特征缓存，更慢但更彻底）</label>
 <div class="mmeta" style="margin-top:6px">每次训练都在<b>全部</b>已标注样本上从头训一个新模型（非增量）。「从头重建」额外强制为每段重抽 s3d 特征。</div>
+<div id="trainVideoProg" class="pbar" style="display:none"></div>
 <div class="t-status" id="trainVideoStatus"></div>
 </div></div>
 <div class="card"><div class="card-h">当前生效模型</div><div class="card-b">
@@ -378,6 +408,7 @@ const I={
 };
 $('#ic1').innerHTML=I.drop; $('#ic2').innerHTML=I.cal; $('#ic3').innerHTML=I.avg; $('#ic4').innerHTML=I.clock;
 $('#ict1').innerHTML=I.cam; $('#ict2').innerHTML=I.drop; $('#ict3').innerHTML=I.check; $('#ict4').innerHTML=I.avg;
+$('#ickt1').innerHTML=I.drop; $('#ickt2').innerHTML=I.avg; $('#ickt3').innerHTML=I.clock; $('#ickt4').innerHTML=I.cal;
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
 /* 标签页切换 —— 视频只在打开「视频」页时才加载，避免一进来全部转圈 */
@@ -438,13 +469,45 @@ function drawChart(box,pts){
     <linearGradient id="gT" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--green)"/><stop offset="1" stop-color="var(--accent2)" stop-opacity=".8"/></linearGradient></defs>
     <line class="cbase" x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}"/>${bars}${vtxt}${xlab}</svg>`;
 }
+/* 紧凑小图：一排小柱 + 每隔 everyLabel 个标一次横轴；gid 给各自的渐变唯一 id */
+function drawMini(box,labels,vals,gid,everyLabel){
+  const W=380,H=176,L=8,R=8,T=22,B=28,ph=H-T-B,pw=W-L-R;
+  const maxV=Math.max(1,...vals),n=vals.length,slot=pw/n,bw=Math.min(26,slot*0.66);
+  const bx=i=>L+slot*i+(slot-bw)/2;
+  let bars='',xlab='';
+  vals.forEach((v,i)=>{const h=v/maxV*ph,x=bx(i),y=T+ph-h;
+    bars+=`<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h,.001).toFixed(1)}" rx="${Math.min(bw/2,5).toFixed(1)}" fill="url(#${gid})" style="animation-delay:${i*15}ms"><title>${labels[i]}　${v} 次</title></rect>`;
+    if(v>0)bars+=`<text class="cval" style="font-size:10.5px" x="${(x+bw/2).toFixed(1)}" y="${(y-5).toFixed(1)}" text-anchor="middle">${v}</text>`;
+    if(i%everyLabel===0)xlab+=`<text class="cxlab" x="${(x+bw/2).toFixed(1)}" y="${H-9}" text-anchor="middle">${labels[i]}</text>`;});
+  box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img"><defs>
+    <linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent2)"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".7"/></linearGradient></defs>
+    <line class="cbase" x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}"/>${bars}${xlab}</svg>`;
+}
+function peakLabel(vals,fmt){const mx=Math.max(0,...vals);if(mx<=0)return '';
+  const i=vals.indexOf(mx);return '高峰 '+fmt(i);}
+function renderDelta(cur,prev){
+  const el=$('#trendDelta');
+  if(!prev){el.innerHTML=`本期共 <b>${cur}</b> 次　·　暂无上一周期数据可比`;return;}
+  const diff=cur-prev,pct=Math.round(Math.abs(diff)/prev*100);
+  const cls=diff>0?'up':diff<0?'down':'flat',arr=diff>0?'↑':diff<0?'↓':'→';
+  const word=diff>0?'多':diff<0?'少':'持平';
+  el.innerHTML=`本期 <b>${cur}</b> 次　<span class="${cls}">${arr} ${pct}%</span>　比上一周期(<b>${prev}</b> 次)${word}${diff?' '+Math.abs(diff)+' 次':''}`;
+}
 async function renderTrend(){
-  const r=await (await fetch('/api/stats/range?days='+trendDays)).json();
+  const r=await (await fetch('/api/stats/trend?days='+trendDays)).json();
   const pts=r.days||[];
   drawChart($('#chart'),pts);
-  const vals=pts.map(p=>p.count),total=vals.reduce((a,b)=>a+b,0);
-  const avg=pts.length?(total/pts.length).toFixed(1):'0',mx=Math.max(0,...vals);
-  $('#trendSum').innerHTML=`近 ${pts.length} 天共 <b>${total}</b> 次　·　日均 <b>${avg}</b> 次　·　单日最多 <b>${mx}</b> 次`;
+  const vals=pts.map(p=>p.count),total=r.total??vals.reduce((a,b)=>a+b,0);
+  const days=pts.length,avg=days?(total/days).toFixed(1):'0',mx=Math.max(0,...vals);
+  $('#tkTotal').textContent=total; $('#tkAvg').textContent=avg;
+  $('#tkMax').textContent=mx; $('#tkActive').textContent=`${r.active_days??0} / ${days}`;
+  renderDelta(total, r.prev_total||0);
+  const HOURS=Array.from({length:24},(_,i)=>String(i));
+  drawMini($('#chartHour'),HOURS,r.hourly||[],'gH',3);
+  $('#hourPeak').textContent=peakLabel(r.hourly||[],i=>`${i}:00–${(i+1)%24}:00`);
+  const WD=['一','二','三','四','五','六','日'];
+  drawMini($('#chartWeekday'),WD,r.weekday||[],'gW',1);
+  $('#wdPeak').textContent=peakLabel(r.weekday||[],i=>'周'+WD[i]);
 }
 function setRange(d,btn){trendDays=d;for(const b of $('#rangeCtl').children)b.classList.toggle('on',b===btn);renderTrend();}
 
@@ -454,6 +517,8 @@ const CLIP_PAGE=12;
 async function loadClips(){
   clipPage=1;
   clipsData=await (await fetch('/api/clips')).json();
+  const cap=clipsData.max_clips||1000;
+  $('#clipsCap').innerHTML=`最多保留 <b style="color:var(--ink)">${cap}</b> 段 · 超量先删最旧的「没喝」，喝水/未判定永不删`;
   renderClips();
 }
 function statusHtml(v){return v===true?`<span class="status s-yes"><i></i>真喝水</span>`
@@ -566,15 +631,31 @@ async function trainVideo(){
   if(!r.started&&r.error){$('#trainVideoStatus').textContent=r.error;return;}
   pollTrainVideo();
 }
+function renderTrainProg(s){
+  const p=$('#trainVideoProg');
+  if(!p)return;
+  const phase=s.phase,done=s.done||0,total=s.total||0,prog=s.progress||0;
+  const lab=phase==='extracting'?`抽取特征 ${done}/${total} 段`
+    :phase==='training'?'训练分类器…'
+    :'加载 s3d 模型…（首次需下载约 30MB，请稍候）';
+  const det=phase==='extracting';   // 只有抽特征阶段能给确定百分比
+  const pct=Math.round(prog*100);
+  p.style.display='block';
+  p.innerHTML=`<div class="pbar-track"><div class="pbar-fill ${det?'det':'indet'}" `+
+    `style="${det?'width:'+pct+'%':''}"></div></div>`+
+    `<div class="pbar-lab"><span>${lab}</span><span>${det?pct+'%':''}</span></div>`;
+}
 async function pollTrainVideo(){
   const s=await (await fetch('/api/train_video/status')).json();
-  const btn=$('#trainVideoBtn'),st=$('#trainVideoStatus');
+  const btn=$('#trainVideoBtn'),st=$('#trainVideoStatus'),prog=$('#trainVideoProg');
   if(s.state==='disabled'){btn.disabled=true;st.textContent='本入口未启用视频训练';return;}
   if(s.state==='running'){
     btn.disabled=true;st.textContent=s.detail||'训练中…';
+    renderTrainProg(s);
     if(!trainVideoTimer)trainVideoTimer=setInterval(pollTrainVideo,2000);
   }else{
     if(trainVideoTimer){clearInterval(trainVideoTimer);trainVideoTimer=null;}
+    if(prog)prog.style.display='none';
     btn.disabled=false;
     const r=s.result;
     if(s.state==='done'&&r){
@@ -665,6 +746,30 @@ def create_app(
         days = max(1, min(int(days), 90))
         points = stats.daily_counts(datetime.now(), days)
         return {"days": [{"date": d, "count": c} for d, c in points]}
+
+    @app.get("/api/stats/trend")
+    def stats_trend(days: int = 7):
+        """趋势页一次取齐：每日次数 + KPI（总计/活跃天数）+ 环比 + 时段/星期分布。"""
+        days = max(1, min(int(days), 90))
+        now = datetime.now()
+        points = stats.daily_counts(now, days)
+        # 当前窗口 [start, end)
+        end_day = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        start_day = end_day - timedelta(days=days)
+        evs = stats.events_between(start_day.timestamp(), end_day.timestamp())
+        buckets = bucket_events(evs)
+        total = len(evs)
+        active_days = sum(1 for _, c in points if c > 0)
+        prev_start = start_day - timedelta(days=days)
+        prev_total = stats.count_between(prev_start.timestamp(), start_day.timestamp())
+        return {
+            "days": [{"date": d, "count": c} for d, c in points],
+            "total": total,
+            "active_days": active_days,
+            "prev_total": prev_total,
+            "hourly": buckets["hourly"],
+            "weekday": buckets["weekday"],
+        }
 
     @app.get("/chart/{span}.png")
     def chart(span: str):
@@ -762,7 +867,8 @@ def create_app(
         predictions = {n: preds[n] for n in names if n in preds}  # 测试模型对该段的判断
         meta = {n: feedback.label_meta(n) for n in names}         # 标注来源/置信度/理由
         return {"clips": names, "labels": labels, "durations": durations,
-                "predictions": predictions, "meta": meta}
+                "predictions": predictions, "meta": meta,
+                "max_clips": recorder.max_clips}
 
     @app.get("/clips/{name}/thumb.jpg")
     def clip_thumb(name: str):

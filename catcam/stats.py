@@ -11,6 +11,20 @@ def day_bounds(dt: datetime) -> tuple[float, float]:
     return start.timestamp(), end.timestamp()
 
 
+def bucket_events(events: list[dict]) -> dict:
+    """把 events_between 的事件按「小时(0-23)」和「星期(周一=0…周日=6)」分桶。
+
+    纯函数（只看每条的 ts），给趋势页的「时段分布 / 星期分布」两张图用。
+    """
+    hourly = [0] * 24
+    weekday = [0] * 7
+    for e in events:
+        dt = datetime.fromtimestamp(e["ts"])
+        hourly[dt.hour] += 1
+        weekday[dt.weekday()] += 1
+    return {"hourly": hourly, "weekday": weekday}
+
+
 class StatsStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
