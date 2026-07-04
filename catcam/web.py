@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -9,6 +11,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from catcam.audio import muted_cmd
 from catcam.charts import trend_png
 from catcam.classifier import DrinkingClassifier
 from catcam.recorder import ClipRecorder
@@ -173,7 +176,10 @@ main{padding:30px 0 90px}
   font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* 视频：筛选 + 懒加载缩略图 */
-.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:20px}
+.dl-audio-toggle{margin-left:auto;display:inline-flex;align-items:center;gap:6px;
+  font-size:13px;color:var(--muted);font-weight:600;cursor:pointer}
+.dl-audio-toggle input{cursor:pointer}
 .fchip{border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:980px;
   padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;transition:.18s;font-family:inherit}
 .fchip:hover{color:var(--ink)}
@@ -359,6 +365,7 @@ main{padding:30px 0 90px}
 <button class="fchip" onclick="setFilter('none',this)">未标注</button>
 <button class="fchip" onclick="setFilter('yes',this)">真喝水</button>
 <button class="fchip" onclick="setFilter('no',this)">没喝</button>
+<label class="dl-audio-toggle"><input type="checkbox" id="dlAudio" checked> 下载含声音</label>
 </div>
 <div class="clips" id="clips"></div>
 </section>
@@ -558,7 +565,7 @@ function clipCard(n){
         <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
         <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
       </div>
-      <a class="dl" href="/clips/${encodeURIComponent(n)}" download>${I.dl}下载</a>
+      <a class="dl" href="/clips/${encodeURIComponent(n)}" download onclick='this.href=dlUrl(${jn})'>${I.dl}下载</a>
     </div></div>`;
 }
 function renderClips(){
@@ -586,6 +593,9 @@ function renderClips(){
 function playClip(thumb,name){
   thumb.innerHTML=`<video src="/clips/${encodeURIComponent(name)}" controls autoplay playsinline></video>`;
 }
+/* 下载 href：勾了「含声音」给原始文件（录了音就有声），否则给去音轨版 */
+function dlUrl(name){const e=encodeURIComponent(name);
+  return ($('#dlAudio')&&$('#dlAudio').checked)?('/clips/'+e):('/clips/'+e+'?audio=0');}
 function setFilter(f,btn){clipFilter=f;clipPage=1;$$('.fchip').forEach(b=>b.classList.toggle('on',b===btn));renderClips();}
 async function fb(clip,is){
   await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -890,13 +900,35 @@ def create_app(
                         headers={"Cache-Control": "max-age=3600"})
 
     @app.get("/clips/{name}")
-    def get_clip(name: str):
+    def get_clip(name: str, audio: int = 1):
         if "/" in name or "\\" in name or ".." in name:
             raise HTTPException(status_code=400, detail="bad name")
         path = clips_dir / name
         if not path.exists():
             raise HTTPException(status_code=404, detail="not found")
-        return FileResponse(path, media_type="video/mp4")
+        # audio=0：现场用 ffmpeg 去掉音轨后流式吐出（视频轨 copy，不重编码）。
+        # ffmpeg 不可用 → 回退原文件（fail-open，宁可给原始也不 500）。
+        if audio == 0 and shutil.which("ffmpeg") is not None:
+            proc = subprocess.Popen(muted_cmd(str(path)),
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+            def _stream():
+                try:
+                    while True:
+                        chunk = proc.stdout.read(65536)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    proc.stdout.close()
+                    proc.terminate()
+
+            muted_name = name[:-4] + "_muted.mp4" if name.endswith(".mp4") else name + "_muted.mp4"
+            return StreamingResponse(
+                _stream(), media_type="video/mp4",
+                headers={"Content-Disposition": f'attachment; filename="{muted_name}"'})
+        return FileResponse(path, media_type="video/mp4",
+                            headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     @app.get("/snapshot.jpg")
     def snapshot():

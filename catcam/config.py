@@ -73,6 +73,14 @@ class Config:
     # 检测节奏：每隔这么久跑一次 YOLO 识别（与采集/预览解耦，预览始终流畅）。
     detect_interval_seconds: float = 0.2
 
+    # 录制带声音（仅会话录制模式）：持续采相机麦克风进环形缓冲，会话结束把对应时段音频 mux 进 mp4。
+    # 默认关（隐私）。⚠️ macOS 需在「系统设置→隐私与安全性→麦克风」给跑 catcam 的终端授权，
+    # 否则采音会卡住——代码有看门狗，起不来就当无声、不影响录制（见 audio.py）。
+    record_audio: bool = False
+    audio_input_format: str = "avfoundation"  # 平台相关：mac=avfoundation；Linux 可改 alsa/pulse
+    audio_device: str = ":1"                   # 传给 ffmpeg -i 的值；":1"=仅音频设备 1（本机相机麦）
+    audio_sample_rate: int = 16000
+
     @property
     def clips_dir(self) -> Path:
         return Path(self.data_dir) / "clips"

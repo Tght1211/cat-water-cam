@@ -38,6 +38,25 @@ def test_clips_list_includes_label_status(tmp_path):
     assert body["labels"]["clip_1000.mp4"] is None
 
 
+def test_clip_download_default_has_attachment(tmp_path):
+    app, _, recorder, _ = _build(tmp_path)
+    recorder.save_clip([np.zeros((48, 64, 3), np.uint8)], timestamp=1.0)
+    r = TestClient(app).get("/clips/clip_1000.mp4")
+    assert r.status_code == 200
+    assert "attachment" in r.headers.get("content-disposition", "")
+
+
+def test_clip_muted_download_falls_back_when_no_ffmpeg(tmp_path, monkeypatch):
+    # 无 ffmpeg 时 audio=0 应回退原文件，不 500（fail-open）
+    import catcam.web as web
+    monkeypatch.setattr(web.shutil, "which", lambda _: None)
+    app, _, recorder, _ = _build(tmp_path)
+    recorder.save_clip([np.zeros((48, 64, 3), np.uint8)], timestamp=2.0)
+    r = TestClient(app).get("/clips/clip_2000.mp4?audio=0")
+    assert r.status_code == 200
+    assert r.content  # 原文件字节
+
+
 def test_clips_list_reports_max_clips(tmp_path):
     app, _, recorder, _ = _build(tmp_path)
     body = TestClient(app).get("/api/clips").json()

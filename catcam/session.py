@@ -20,6 +20,8 @@ class SessionResult:
     timestamp: float       # 会话开始时间
     clip_name: str         # 存盘文件名
     photo: object          # 触发时的代表帧（猫在喝水），供邮件用
+    audio_start: float = 0.0  # 该段对应的音频窗口起点（回溯了 preroll），供 mux 切片
+    audio_end: float = 0.0    # 音频窗口终点（收尾时刻）
 
 
 class DrinkSession:
@@ -42,6 +44,7 @@ class DrinkSession:
         self._cooldown_until: float = 0.0
         self._path = None
         self._photo = None
+        self._audio_start: float = 0.0
 
     @property
     def recording(self) -> bool:
@@ -74,18 +77,22 @@ class DrinkSession:
         self._path = self.recorder.clips_dir / clip_filename(now)
         self._writer = open_writer(self._path, self.recorder.fps, (width, height))
         # pre-roll：把回放缓冲（含凑近过程 + dwell 这几秒）先写进去，避免漏掉开头。
-        for f in frame_buffer.all_frames():
+        preroll_frames = frame_buffer.all_frames()
+        for f in preroll_frames:
             self._writer.write(f)
         self._start = now
         self._last_present = now
         self._photo = frame
+        # 音频窗口起点：从开录时刻回溯 preroll 帧对应的时长（帧按 fps 节奏），与视频开头对齐。
+        self._audio_start = now - len(preroll_frames) / max(1, self.recorder.fps)
 
     def _finish(self, now) -> SessionResult:
         self._writer.release()
         self._writer = None
         prune_dir(self.recorder.clips_dir, self.recorder.max_clips)
         self._cooldown_until = now + self.cooldown_seconds
-        res = SessionResult(timestamp=self._start, clip_name=self._path.name, photo=self._photo)
+        res = SessionResult(timestamp=self._start, clip_name=self._path.name, photo=self._photo,
+                            audio_start=self._audio_start, audio_end=now)
         self._path = None
         self._photo = None
         return res

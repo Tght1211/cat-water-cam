@@ -14,6 +14,7 @@ from catcam.config import load_config
 from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
 from catcam.models import ModelRegistry
+from catcam.audio import AudioRing, mux_audio_into
 from catcam.framebuffer import FrameBuffer
 from catcam.judge import VLMClipJudge, route_clip
 from catcam.mailer import Emailer
@@ -175,6 +176,19 @@ def main(config_path: str = "config.json") -> None:
     )
     presence = Presence()
 
+    # 录音（仅会话录制模式）：持续采麦克风进环形缓冲，会话结束把对应时段 mux 进 mp4。
+    # 起不来（无权限/无设备）由 AudioRing 内部看门狗兜底 → 无声，不影响录制。
+    audio_ring = None
+    if cfg.record_audio and session is not None:
+        ring_seconds = cfg.preroll_seconds + cfg.max_session_seconds + 10.0
+        audio_ring = AudioRing(
+            cfg.audio_input_format, cfg.audio_device,
+            sample_rate=cfg.audio_sample_rate, max_seconds=ring_seconds,
+        )
+        audio_ring.start()
+        print(f"录音已开启（{cfg.audio_input_format} {cfg.audio_device}）；"
+              f"⚠️ 若无声请在『系统设置→隐私与安全性→麦克风』给终端授权。")
+
     latest = LatestFrame()
     app = create_app(
         stats, recorder, feedback, latest.get, cfg.clips_dir, trainer,
@@ -226,6 +240,16 @@ def main(config_path: str = "config.json") -> None:
                 print(f"AI 裁判流程异常（{clip_name}）：{e}")
         threading.Thread(target=_run, daemon=True).start()
 
+    def _mux_async(res) -> None:
+        # 会话录完后台把对应时段音频合进这段 mp4（原子替换，不阻塞采集；失败则保持无声）。
+        if audio_ring is None or not audio_ring.available:
+            return
+        def _run():
+            pcm = audio_ring.slice(res.audio_start, res.audio_end)
+            if mux_audio_into(cfg.clips_dir / res.clip_name, pcm, cfg.audio_sample_rate):
+                print(f"已为 {res.clip_name} 合入声音。")
+        threading.Thread(target=_run, daemon=True).start()
+
     # 采集线程：全速读相机 → 更新预览（网页流畅）；按 fps 节奏喂回放缓冲，
     # 会话录制也在这里按帧率写帧（writer fps 一致，播放速度才正确）。
     def _capture() -> None:
@@ -247,6 +271,7 @@ def main(config_path: str = "config.json") -> None:
                     res = session.update(now, frame, in_roi, since, frame_buffer)
                     if res is not None:
                         print(f"录到一段候选： {res.clip_name}（等 AI 裁判判是否真喝水）")
+                        _mux_async(res)   # 后台把声音合进这段（若开了录音且可用）
                         # 影子模型对这段的预测（不影响判定，仅记下来供评估）。
                         pred = active_model.predict(res.photo)
                         stats.record_event(
@@ -283,4 +308,11 @@ def main(config_path: str = "config.json") -> None:
             res = session.close()
             if res is not None:
                 stats.record_event(res.timestamp, res.clip_name)
+                # 退出时收尾的最后一段：同步合一次声音（守护线程即将随进程消失，来不及异步）。
+                if audio_ring is not None and audio_ring.available:
+                    mux_audio_into(cfg.clips_dir / res.clip_name,
+                                   audio_ring.slice(res.audio_start, res.audio_end),
+                                   cfg.audio_sample_rate)
+        if audio_ring is not None:
+            audio_ring.stop()
         cap.release()

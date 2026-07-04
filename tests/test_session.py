@@ -39,6 +39,10 @@ def test_records_from_dwell_until_leave(tmp_path):
     assert (rec.clips_dir / res.clip_name).exists()
     # 会话时间戳是开始时刻，不是结束
     assert abs(res.timestamp - 2.1) < 1e-6
+    # 音频窗口：终点是收尾时刻；起点回溯 preroll（缓冲帧数/fps）
+    assert res.audio_end == 8.5
+    assert res.audio_start <= 2.1
+    assert abs(res.audio_start - (2.1 - len(fb.all_frames()) / rec.fps)) < 1e-6
 
 
 def test_caps_at_max_session(tmp_path):
