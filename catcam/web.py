@@ -35,22 +35,28 @@ INDEX_HTML = """<!doctype html>
 <title>猫咪饮水监控</title>
 <style>
 :root{
-  --bg:#f5f5f7; --surface:#ffffff; --surface2:#fbfbfd; --nav:rgba(245,245,247,.72);
-  --ink:#1d1d1f; --muted:#86868b; --line:rgba(0,0,0,.08);
-  --accent:#0071e3; --accent2:#0a84ff; --green:#34c759; --red:#ff3b30; --amber:#ff9f0a;
-  --shadow:0 8px 30px rgba(0,0,0,.06); --shadow-h:0 16px 44px rgba(0,0,0,.12);
-  --radius:20px;
+  --bg:#fef6f9; --surface:#ffffff; --surface2:#fff7fb; --nav:rgba(255,247,251,.78);
+  --ink:#3a2f39; --muted:#a3919c; --line:rgba(120,80,110,.12);
+  --accent:#ff7bac; --accent2:#7cc4ff; --green:#3fce9a; --red:#ff6b8a; --amber:#ffb454;
+  --sky:#7cc4ff; --mint:#5fded0; --peach:#ffb27a; --grape:#b79cff;
+  --shadow:0 10px 34px rgba(214,120,170,.12); --shadow-h:0 18px 48px rgba(214,120,170,.22);
+  --radius:26px;
+  --bg-grad:radial-gradient(1200px 600px at 12% -8%,rgba(124,196,255,.20),transparent 60%),
+            radial-gradient(1000px 520px at 100% 0%,rgba(255,123,172,.16),transparent 55%);
 }
 @media (prefers-color-scheme:dark){:root{
-  --bg:#000; --surface:#1c1c1e; --surface2:#161618; --nav:rgba(28,28,30,.7);
-  --ink:#f5f5f7; --muted:#98989d; --line:rgba(255,255,255,.12);
-  --accent:#0a84ff; --accent2:#409cff; --green:#30d158; --red:#ff453a; --amber:#ffd60a;
-  --shadow:0 8px 30px rgba(0,0,0,.5); --shadow-h:0 18px 48px rgba(0,0,0,.65);
+  --bg:#191320; --surface:#241b2e; --surface2:#1f1728; --nav:rgba(31,23,40,.74);
+  --ink:#f4ecf4; --muted:#b39fb0; --line:rgba(255,255,255,.10);
+  --accent:#ff89b7; --accent2:#8fceff; --green:#4fdca6; --red:#ff7d97; --amber:#ffc06a;
+  --sky:#8fceff; --mint:#66e6d6; --peach:#ffc08c; --grape:#c3adff;
+  --shadow:0 10px 34px rgba(0,0,0,.5); --shadow-h:0 18px 48px rgba(0,0,0,.66);
+  --bg-grad:radial-gradient(1200px 600px at 12% -8%,rgba(124,196,255,.14),transparent 60%),
+            radial-gradient(1000px 520px at 100% 0%,rgba(255,123,172,.12),transparent 55%);
 }}
 *{box-sizing:border-box}
 html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-body{margin:0;background:var(--bg);color:var(--ink);
-  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif;
+body{margin:0;background:var(--bg);background-image:var(--bg-grad);background-attachment:fixed;color:var(--ink);
+  font-family:ui-rounded,"SF Pro Rounded",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
   letter-spacing:-.01em}
 .wrap{max-width:1280px;margin:0 auto;padding:0 24px}
 a{color:inherit}
@@ -59,22 +65,31 @@ a{color:inherit}
 header{position:sticky;top:0;z-index:20;background:var(--nav);
   backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
   border-bottom:1px solid var(--line)}
-.nav{display:flex;align-items:center;gap:16px;height:60px}
-.brand{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:600;white-space:nowrap}
-.brand svg{width:22px;height:22px;color:var(--accent)}
-.tabs{display:flex;gap:3px;background:var(--bg);border:1px solid var(--line);
-  border-radius:980px;padding:4px;margin:0 auto}
+.nav{display:flex;align-items:center;gap:14px;height:66px}
+.brand{display:flex;align-items:center;gap:9px;font-size:18px;font-weight:800;white-space:nowrap}
+.brand-cat{width:34px;height:34px;display:grid;place-items:center;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--grape));color:#fff;box-shadow:var(--shadow)}
+.brand-cat svg{width:24px;height:24px}
+.tabs{display:flex;gap:4px;background:var(--surface);border:1px solid var(--line);
+  border-radius:980px;padding:5px;margin:0 auto;box-shadow:var(--shadow)}
 .tabs button{border:0;background:transparent;color:var(--muted);font-family:inherit;
-  font-size:14px;font-weight:600;padding:8px 18px;border-radius:980px;cursor:pointer;transition:.2s}
+  font-size:14px;font-weight:700;padding:9px 18px;border-radius:980px;cursor:pointer;transition:.2s}
 .tabs button:hover{color:var(--ink)}
-.tabs button.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.14)}
-.pill{display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:#fff;
-  border-radius:980px;padding:7px 15px;font-size:13px;font-weight:600;white-space:nowrap}
-.pill b{font-variant-numeric:tabular-nums}
+.tabs button.on{background:linear-gradient(135deg,var(--accent),var(--grape));color:#fff;
+  box-shadow:0 4px 14px rgba(255,123,172,.4)}
+.pill{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,var(--sky),var(--mint));
+  color:#fff;border-radius:980px;padding:8px 16px;font-size:13px;font-weight:800;white-space:nowrap;
+  box-shadow:0 4px 14px rgba(124,196,255,.36)}
+.pill b{font-variant-numeric:tabular-nums;font-size:15px}
+.adv-link{border:1px solid var(--line);background:var(--surface);color:var(--muted);font-family:inherit;
+  font-size:12.5px;font-weight:700;padding:8px 13px;border-radius:980px;cursor:pointer;transition:.2s;white-space:nowrap}
+.adv-link:hover{color:var(--ink);border-color:var(--accent)}
+.adv-link.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 @media (max-width:720px){
   .nav{flex-wrap:wrap;height:auto;padding:10px 0;gap:10px}
   .tabs{order:3;width:100%;margin:0;justify-content:space-between}
   .tabs button{flex:1;padding:8px 0}
+  .adv-link{order:2}
 }
 
 main{padding:30px 0 90px}
@@ -88,8 +103,8 @@ main{padding:30px 0 90px}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);overflow:hidden}
-.card-h{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:16px 20px 0;
-  font-size:12px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
+.card-h{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:17px 22px 0;
+  font-size:14px;font-weight:800;letter-spacing:0;color:var(--ink)}
 .card-b{padding:16px 20px 20px}
 
 /* KPI 指标卡 */
@@ -224,6 +239,21 @@ main{padding:30px 0 90px}
 .disp-btns button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .disp-btns button.primary:hover{filter:brightness(1.05)}
 .disp-mpd{margin-top:12px;font-size:12px;color:var(--muted)}
+/* 动态水箱 */
+.disp-hero{display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+.disp-tankwrap{position:relative;width:150px;height:150px;flex:none;filter:drop-shadow(0 8px 18px rgba(124,196,255,.3))}
+.tank{width:100%;height:100%;overflow:visible;display:block}
+.tank.low{filter:drop-shadow(0 8px 18px rgba(255,107,138,.35))}
+.tank-pct{position:absolute;inset:0 0 8px;display:grid;place-items:center;font-size:28px;font-weight:800;
+  color:var(--ink);text-shadow:0 1px 8px var(--surface),0 0 3px var(--surface);pointer-events:none}
+.disp-info{flex:1;min-width:230px}
+.waterlvl{transition:transform .9s cubic-bezier(.22,1,.36,1)}
+@keyframes waveShift{from{transform:translateX(0)}to{transform:translateX(-20px)}}
+.tank .wave{animation:waveShift 1.7s linear infinite}
+.tank .w2{animation-duration:2.7s;animation-direction:reverse}
+@keyframes bubbleUp{0%{transform:translateY(0);opacity:0}25%{opacity:.6}100%{transform:translateY(-80px);opacity:0}}
+.tank .bub{animation:bubbleUp 3.4s ease-in infinite}
+@media (prefers-reduced-motion:reduce){.tank .wave,.tank .bub{animation:none}}
 
 /* 视频：筛选 + 懒加载缩略图 */
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:20px}
@@ -255,6 +285,8 @@ main{padding:30px 0 90px}
 .src-badge.human{background:var(--line);color:var(--muted)}
 .mrec{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .mrec svg{width:13px;height:13px;color:var(--muted)}
+.mrec.big{font-size:14px;font-weight:700;color:var(--ink)}
+.mrec.big svg{width:15px;height:15px;color:var(--accent)}
 .thumb video{width:100%;height:100%;display:block;background:#000;object-fit:cover}
 /* 视频时间线分组 + 滚动分页 */
 .day-head{grid-column:1/-1;display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;color:var(--ink);margin:16px 2px 0}
@@ -346,15 +378,15 @@ main{padding:30px 0 90px}
 <body>
 <header><div class="wrap nav">
 <div class="brand">
-<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.2C12 2.2 4.8 9.9 4.8 14.7a7.2 7.2 0 0 0 14.4 0C19.2 9.9 12 2.2 12 2.2Z"/></svg>
-猫咪饮水监控</div>
+<span class="brand-cat" aria-hidden="true"><svg viewBox="0 0 44 44" fill="none"><path d="M9 8l6 6a13 13 0 0 1 14 0l6-6-1.5 12" fill="currentColor"/><ellipse cx="22" cy="25" rx="15" ry="13" fill="currentColor"/><circle cx="16" cy="23" r="2.1" fill="#fff"/><circle cx="28" cy="23" r="2.1" fill="#fff"/><path d="M22 28l-2 2h4z" fill="#fff"/><path d="M6 27h7M31 27h7M6 31h6M32 31h6" stroke="#fff" stroke-width="1.4" stroke-linecap="round" opacity=".85"/></svg></span>
+喵喵饮水站</div>
 <nav class="tabs">
-<button data-tab="home" class="on">总览</button>
-<button data-tab="trend">趋势</button>
-<button data-tab="clips">视频</button>
-<button data-tab="train">训练</button>
+<button data-tab="home" class="on">🏠 首页</button>
+<button data-tab="trend">📈 趋势</button>
+<button data-tab="clips">🐟 喝水记录</button>
 </nav>
-<span class="pill">今日 <b id="count">–</b> 次</span>
+<span class="pill">今日 <b id="count">–</b> 次 💧</span>
+<button class="adv-link" data-tab="train" title="高级：模型训练与视频标注（进阶用户）">⚙️ 高级</button>
 </div></header>
 
 <main class="wrap">
@@ -409,23 +441,33 @@ main{padding:30px 0 90px}
 </div></div>
 </section>
 
-<!-- 视频 -->
+<!-- 喝水记录（用户向：时间线 + 视频） -->
 <section id="tab-clips" class="tab">
-<div class="head"><div><h2>喝水视频</h2><p>点缩略图播放 · 点 👍/👎 标注攒训练数据</p></div>
+<div class="head"><div><h2>🐟 喝水记录</h2><p>喵喵每次来喝水都录下来了 · 按时间倒序 · 点封面就能看回放</p></div>
 <div class="right" id="clipsCap" style="max-width:280px;text-align:right;line-height:1.5">最多保留 1000 段</div></div>
 <div class="toolbar" id="filters">
 <button class="fchip on" onclick="setFilter('all',this)">全部</button>
-<button class="fchip" onclick="setFilter('none',this)">未标注</button>
-<button class="fchip" onclick="setFilter('yes',this)">真喝水</button>
+<button class="fchip" onclick="setFilter('yes',this)">真喝水 💧</button>
 <button class="fchip" onclick="setFilter('no',this)">没喝</button>
+<button class="fchip" onclick="setFilter('none',this)">待判定</button>
 <label class="dl-audio-toggle"><input type="checkbox" id="dlAudio" checked> 下载含声音</label>
 </div>
 <div class="clips" id="clips"></div>
 </section>
 
-<!-- 训练 -->
+<!-- 高级（后台）：视频标注 + 模型训练 -->
 <section id="tab-train" class="tab">
-<div class="head"><div><h2>模型训练</h2><p>越标越准 · 自我迭代 · 训练产出新版本但不自动生效，需手动启用</p></div></div>
+<div class="head"><div><h2>⚙️ 高级</h2><p>视频标注与模型训练 · 进阶功能，普通使用无需来这里；模型练好后大家直接享用即可</p></div></div>
+<div class="card" style="margin-bottom:24px"><div class="card-h">视频标注（喂训练数据）</div><div class="card-b">
+<p class="mmeta" style="margin:0 0 14px">给每段点 👍真喝水 / 👎没喝，攒够就能训练/改进模型。AI 已自动标注大多数，这里做人工校正。</p>
+<div class="toolbar" id="labelFilters" style="margin-bottom:16px">
+<button class="fchip on" onclick="setLabelFilter('all',this)">全部</button>
+<button class="fchip" onclick="setLabelFilter('none',this)">未标注</button>
+<button class="fchip" onclick="setLabelFilter('yes',this)">真喝水</button>
+<button class="fchip" onclick="setLabelFilter('no',this)">没喝</button>
+</div>
+<div class="clips" id="labelClips"></div>
+</div></div>
 <div class="kpis">
 <div class="kpi"><div class="k-top"><span class="k-ico" id="ict1"></span>待标注</div><div class="k-val"><span id="dsUn">–</span><small>段</small></div></div>
 <div class="kpi"><div class="k-top"><span class="k-ico" id="ict2"></span>已标注·未训练</div><div class="k-val"><span id="dsNew">–</span><small>段</small></div></div>
@@ -472,15 +514,15 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 
 /* 标签页切换 —— 视频只在打开「视频」页时才加载，避免一进来全部转圈 */
 function show(t){
-  $$('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+  $$('[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
   $$('.tab').forEach(s=>s.classList.toggle('on',s.id==='tab-'+t));
   history.replaceState(null,'','#'+t);
   if(t==='home')loadDispenser();
   if(t==='trend')renderTrend();
   if(t==='clips')loadClips();
-  if(t==='train'){pollTrain();pollTrainVideo();}
+  if(t==='train'){pollTrain();pollTrainVideo();loadLabelClips();}
 }
-$$('.tabs button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
+$$('[data-tab]').forEach(b=>b.onclick=()=>show(b.dataset.tab));
 
 /* 饮水机：剩余水量反推 + 滤芯倒计时 + 喝水量(ml)自校准 */
 let dispLastMl=2000;
@@ -491,28 +533,53 @@ function dispBtns(d){return `<div class="disp-btns">
   <button class="primary" onclick="dispRefill()">加满水</button>
   <button onclick="dispFilter()">换了滤芯</button>
   <button onclick="dispCycle(${d.filter_cycle_days})">滤芯周期（${d.filter_cycle_days} 天）</button></div>`;}
+/* 动态水箱 SVG：水位=fill(0-1)，波浪横移 + 气泡上升，低水位变暖色 */
+function dispTank(fill,low){
+  fill=Math.max(0,Math.min(1,fill));
+  const down=((1-fill)*150).toFixed(1);
+  const c1=low?'var(--amber)':'var(--sky)',c2=low?'var(--red)':'var(--accent2)';
+  const wave=amp=>{let d='M-20 30';for(let x=-20;x<220;x+=20)d+=` q10 ${-amp} 20 0`;return d+' L220 200 L-20 200 Z';};
+  const bubbles=[[82,0,3],[100,1.1,2.4],[118,2.2,3.4]].map(([x,dl,r])=>
+    `<circle class="bub" cx="${x}" cy="174" r="${r}" fill="#fff" opacity="0" style="animation-delay:${dl}s"/>`).join('');
+  return `<svg class="tank ${low?'low':''}" viewBox="0 0 200 200" role="img" aria-label="剩余水量">
+    <defs><clipPath id="tankClip"><rect x="50" y="30" width="100" height="150" rx="26"/></clipPath>
+    <linearGradient id="wg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>
+    <rect x="50" y="30" width="100" height="150" rx="26" fill="var(--surface2)" stroke="var(--line)" stroke-width="2.5"/>
+    <g clip-path="url(#tankClip)"><g class="waterlvl" style="transform:translateY(${down}px)">
+      <path class="wave w1" d="${wave(6)}" fill="url(#wg)" opacity=".92"/>
+      <path class="wave w2" d="${wave(5)}" fill="url(#wg)" opacity=".5"/>${bubbles}
+    </g></g>
+    <rect x="50" y="30" width="100" height="150" rx="26" fill="none" stroke="var(--line)" stroke-width="2.5"/>
+  </svg>`;
+}
 function renderDispenser(d){
   const body=$('#dispBody'),note=$('#dispNote');
   if(!d.has_refill){
     note.textContent='';
-    body.innerHTML=`<div style="color:var(--muted);font-size:14px;line-height:1.7">还没记录蓄水。点 <b>「加满水」</b> 填这次加了多少毫升，之后会按小猫喝水次数自动反推剩余水量、快没水时提醒你。</div>${dispBtns(d)}`;
+    body.innerHTML=`<div class="disp-hero"><div class="disp-tankwrap">${dispTank(0,false)}<div class="tank-pct">?</div></div>
+      <div class="disp-info" style="color:var(--muted);font-size:14px;line-height:1.75">🐱 还没记录蓄水～ 点 <b>「加满水」</b> 填这次加了多少毫升，
+      喵喵每次来喝，水箱就会跟着变少，快没水时我会提醒你加水 💧</div></div>${dispBtns(d)}`;
     return;
   }
   const pct=d.remaining_pct==null?0:Math.round(d.remaining_pct*100);
   const low=d.need_water,fdays=d.filter_days_left,fWarn=d.need_filter;
-  note.textContent=low?'该加水了':(fWarn?'该换滤芯了':'');
+  note.textContent=low?'💧 该加水了':(fWarn?'🧽 该换滤芯了':'');
   body.innerHTML=`
-    <div class="disp-top"><span class="disp-lab">剩余水量</span>
-      <span class="disp-remain">约 ${d.remaining_ml} / ${d.last_refill_ml} ml　${pct}%</span></div>
-    <div class="wbar-track"><div class="wbar-fill ${low?'low':''}" style="width:${Math.max(pct,2)}%"></div></div>
-    ${low?`<span class="disp-warn">${I.drop} 水不多了，该加水</span>`:''}
-    <div class="disp-grid">
-      <div class="disp-cell"><div class="dc-k">上次蓄水</div><div class="dc-v" style="font-size:16px">${relTime(d.last_refill_ts)}</div></div>
-      <div class="disp-cell ${fWarn?'warn':''}"><div class="dc-k">滤芯${fWarn?'（该换了）':'剩余'}</div>
-        <div class="dc-v">${!d.has_filter?'—':(fdays<=0?'超期':fdays.toFixed(0))}<small>${d.has_filter&&fdays>0?'天':''}</small></div></div>
-      <div class="disp-cell"><div class="dc-k">今日约喝</div><div class="dc-v">${d.today_ml}<small>ml</small></div></div>
+    <div class="disp-hero">
+      <div class="disp-tankwrap">${dispTank((d.remaining_pct==null?0:d.remaining_pct),low)}<div class="tank-pct">${pct}%</div></div>
+      <div class="disp-info">
+        <div class="disp-top"><span class="disp-lab">剩余水量</span>
+          <span class="disp-remain">约 ${d.remaining_ml} / ${d.last_refill_ml} ml</span></div>
+        ${low?`<div style="margin:8px 0"><span class="disp-warn">${I.drop} 水不多了，快给喵喵加水</span></div>`:''}
+        <div class="disp-grid">
+          <div class="disp-cell"><div class="dc-k">上次蓄水</div><div class="dc-v" style="font-size:16px">${relTime(d.last_refill_ts)}</div></div>
+          <div class="disp-cell ${fWarn?'warn':''}"><div class="dc-k">滤芯${fWarn?'（该换了）':'剩余'}</div>
+            <div class="dc-v">${!d.has_filter?'—':(fdays<=0?'超期':fdays.toFixed(0))}<small>${d.has_filter&&fdays>0?'天':''}</small></div></div>
+          <div class="disp-cell"><div class="dc-k">今日约喝</div><div class="dc-v">${d.today_ml}<small>ml</small></div></div>
+        </div>
+        <div class="disp-mpd">每次约 <b>${d.ml_per_drink}</b> ml（${d.calibrated?'自校准':'默认值'}）· 蓄水以来已喝 ${d.drinks_since_refill} 次</div>
+      </div>
     </div>
-    <div class="disp-mpd">每次约 <b>${d.ml_per_drink}</b> ml（${d.calibrated?'自校准':'默认值'}）· 蓄水以来已喝 ${d.drinks_since_refill} 次</div>
     ${dispBtns(d)}`;
 }
 async function loadDispenser(){
@@ -616,7 +683,7 @@ async function loadClips(){
   renderClips();
 }
 function statusHtml(v){return v===true?`<span class="status s-yes"><i></i>真喝水</span>`
-  :v===false?`<span class="status s-no"><i></i>没喝</span>`:`<span class="status s-none"><i></i>未标注</span>`;}
+  :v===false?`<span class="status s-no"><i></i>没喝</span>`:`<span class="status s-none"><i></i>待判定</span>`;}
 function clipTime(name){const m=String(name).match(/clip_(\\d+)/);return m?new Date(parseInt(m[1],10)):null;}
 function dayLabel(d){
   if(!d)return '未知时间';
@@ -639,15 +706,25 @@ function filteredClips(){
   return clipsData.clips.filter(n=>{const v=lab[n];
     return clipFilter==='all'||(clipFilter==='none'&&v==null)||(clipFilter==='yes'&&v===true)||(clipFilter==='no'&&v===false);});
 }
-function clipCard(n){
+/* clipCard：labelable=false → 干净的「喝水记录」卡（看/下载，只读状态徽标）；
+   labelable=true → 「高级·标注」卡（多 👍/👎、模型预测、来源徽标） */
+function clipCard(n,labelable){
   const lab=clipsData.labels||{},dur=clipsData.durations||{},pr=clipsData.predictions||{},mt=clipsData.meta||{};
   const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),pred=pr[n],t=clipTime(n),m=mt[n];
+  const dtxt=d?`<span class="dur-badge">${d.toFixed(1)} 秒</span>`:'';
+  const trec=t?`<div class="mrec">${I.clock}<span>${hhmmss(t)}</span></div>`:'';
+  const dl=`<a class="dl" href="/clips/${encodeURIComponent(n)}" download onclick='this.href=dlUrl(${jn})'>${I.dl}下载</a>`;
+  if(!labelable){
+    // 用户向：喝水记录卡——只读「真喝水/没喝/待判定」徽标 + 看 + 下载
+    return `<div class="clip" data-name="${en}">
+      <div class="thumb" onclick='playClip(this,${jn})'>
+        <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
+        <button class="play" aria-label="播放">${I.play}</button>${dtxt}</div>
+      <div class="meta"><div class="top">${trec.replace('mrec','mrec big')}${statusHtml(v)}</div>${dl}</div></div>`;
+  }
   const srcBadge=!m?'':(m.source==='ai'
     ? `<span class="src-badge ai" title="${esc(m.reason||'')}">🤖 AI ${m.confidence!=null?m.confidence.toFixed(2):''}</span>`
     : `<span class="src-badge human">✋ 人工</span>`);
-  const dtxt=d?`<span class="dur-badge">${d.toFixed(1)} 秒</span>`:'';
-  // 记录时刻不再压在视频上：只在下方信息区显示（视频上只留时长）
-  const trec=t?`<div class="mrec">${I.clock}<span>${hhmmss(t)}</span></div>`:'';
   const predLine=(pred===undefined)?'':`<div class="mpredline"><span class="mpred ${pred?'y':'n'}">模型：${pred?'真喝水':'没喝'}</span></div>`;
   return `<div class="clip" data-name="${en}">
     <div class="thumb" onclick='playClip(this,${jn})'>
@@ -658,25 +735,27 @@ function clipCard(n){
       <div class="seg">
         <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
         <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
-      </div>
-      <a class="dl" href="/clips/${encodeURIComponent(n)}" download onclick='this.href=dlUrl(${jn})'>${I.dl}下载</a>
-    </div></div>`;
+      </div>${dl}</div></div>`;
+}
+/* 按小时分组 + 分页拼 HTML（两个视图共用） */
+function clipsGroupedHtml(items,page,labelable,sentId,moreCb){
+  const hourCounts={}; items.forEach(n=>{const k=hourKey(clipTime(n));hourCounts[k]=(hourCounts[k]||0)+1;});
+  const shown=items.slice(0,page*CLIP_PAGE);
+  let html='',lastHour=null;
+  shown.forEach(n=>{const dt=clipTime(n),k=hourKey(dt);
+    if(k!==lastHour){lastHour=k;html+=`<div class="day-head"><span class="day-dot"></span>${hourLabel(dt)}<span class="day-n">${hourCounts[k]} 段</span></div>`;}
+    html+=clipCard(n,labelable);});
+  const remaining=items.length-shown.length;
+  if(remaining>0)html+=`<div class="clip-more" id="${sentId}" onclick="${moreCb}">下滑加载更多 · 还有 ${remaining} 段</div>`;
+  return html;
 }
 function renderClips(){
   if(!clipsData)return;
   const box=$('#clips');
-  if(!clipsData.clips.length){box.innerHTML=`<div class="empty">${I.cam}<div>还没有视频。接上摄像头跑 <code>python -m catcam</code>，猫在水碗停留就会自动录制。</div></div>`;return;}
+  if(!clipsData.clips.length){box.innerHTML=`<div class="empty">${I.cam}<div>还没有喝水记录。接上摄像头跑 <code>python -m catcam</code>，喵喵在水碗停留就会自动录下来。</div></div>`;return;}
   const items=filteredClips();
   if(!items.length){box.innerHTML='<div class="empty">这个筛选下没有视频</div>';return;}
-  const hourCounts={}; items.forEach(n=>{const k=hourKey(clipTime(n));hourCounts[k]=(hourCounts[k]||0)+1;});
-  const shown=items.slice(0,clipPage*CLIP_PAGE);
-  let html='',lastHour=null;
-  shown.forEach(n=>{const d=clipTime(n),k=hourKey(d);
-    if(k!==lastHour){lastHour=k;html+=`<div class="day-head"><span class="day-dot"></span>${hourLabel(d)}<span class="day-n">${hourCounts[k]} 段</span></div>`;}
-    html+=clipCard(n);});
-  const remaining=items.length-shown.length;
-  if(remaining>0)html+=`<div class="clip-more" id="clipSentinel" onclick="clipPage++;renderClips()">下滑加载更多 · 还有 ${remaining} 段</div>`;
-  box.innerHTML=html;
+  box.innerHTML=clipsGroupedHtml(items,clipPage,false,'clipSentinel','clipPage++;renderClips()');
   if(clipObserver)clipObserver.disconnect();
   const s=$('#clipSentinel');
   if(s&&'IntersectionObserver' in window){
@@ -684,29 +763,50 @@ function renderClips(){
     clipObserver.observe(s);
   }
 }
+/* 高级·视频标注视图（labelable 卡） */
+let labelFilter='all', labelPage=1;
+async function loadLabelClips(){
+  labelPage=1;
+  clipsData=await (await fetch('/api/clips')).json();
+  renderLabelClips();
+}
+function filteredLabelClips(){
+  const lab=clipsData.labels||{};
+  return clipsData.clips.filter(n=>{const v=lab[n];
+    return labelFilter==='all'||(labelFilter==='none'&&v==null)||(labelFilter==='yes'&&v===true)||(labelFilter==='no'&&v===false);});
+}
+function renderLabelClips(){
+  const box=$('#labelClips'); if(!box||!clipsData)return;
+  if(!clipsData.clips.length){box.innerHTML='<div class="empty" style="grid-column:1/-1">还没有视频可标注</div>';return;}
+  const items=filteredLabelClips();
+  if(!items.length){box.innerHTML='<div class="empty" style="grid-column:1/-1">这个筛选下没有视频</div>';return;}
+  box.innerHTML=clipsGroupedHtml(items,labelPage,true,'labelSentinel','labelPage++;renderLabelClips()');
+}
+function setLabelFilter(f,btn){labelFilter=f;labelPage=1;
+  for(const b of $('#labelFilters').querySelectorAll('.fchip'))b.classList.toggle('on',b===btn);renderLabelClips();}
 function playClip(thumb,name){
   thumb.innerHTML=`<video src="/clips/${encodeURIComponent(name)}" controls autoplay playsinline></video>`;
 }
 /* 下载 href：勾了「含声音」给原始文件（录了音就有声），否则给去音轨版 */
 function dlUrl(name){const e=encodeURIComponent(name);
   return ($('#dlAudio')&&$('#dlAudio').checked)?('/clips/'+e):('/clips/'+e+'?audio=0');}
-function setFilter(f,btn){clipFilter=f;clipPage=1;$$('.fchip').forEach(b=>b.classList.toggle('on',b===btn));renderClips();}
+function setFilter(f,btn){clipFilter=f;clipPage=1;
+  for(const b of $('#filters').querySelectorAll('.fchip'))b.classList.toggle('on',b===btn);renderClips();}
 async function fb(clip,is){
   await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({clip,is_drinking:is})});
   if(clipsData){clipsData.labels[clip]=is;
     if(clipsData.meta)clipsData.meta[clip]={is_drinking:is,source:'human',confidence:null,reason:null};
-    // 局部更新该卡片：不重建整个网格，避免打断其它正在播放的视频
-    const card=$(`.clip[data-name="${CSS.escape(clip)}"]`);
-    if(card){card.querySelector('.status').outerHTML=statusHtml(is);
-      // 人工翻转 → 来源徽标也改成「✋ 人工」（原来可能是 🤖 AI 或没有），别让旧徽标留着
+    // 标注只在「高级」页——局部更新那张卡（限定 #labelClips，避免命中喝水记录页的同名卡）
+    const card=$(`#labelClips .clip[data-name="${CSS.escape(clip)}"]`);
+    if(card){const stEl=card.querySelector('.status');if(stEl)stEl.outerHTML=statusHtml(is);
       const human='<span class="src-badge human">✋ 人工</span>';
       const sb=card.querySelector('.src-badge');
       if(sb){sb.outerHTML=human;}else{const st=card.querySelector('.status');if(st)st.insertAdjacentHTML('afterend',human);}
       const y=card.querySelector('.seg .yes'),no=card.querySelector('.seg .no');
-      y.classList.toggle('on',is===true);no.classList.toggle('on',is===false);
-      if(clipFilter!=='all'){const keep=(clipFilter==='yes'&&is===true)||(clipFilter==='no'&&is===false);
-        if(!keep){card.style.transition='opacity .3s';card.style.opacity='0';setTimeout(renderClips,300);}}
+      if(y)y.classList.toggle('on',is===true);if(no)no.classList.toggle('on',is===false);
+      if(labelFilter!=='all'){const keep=(labelFilter==='yes'&&is===true)||(labelFilter==='no'&&is===false);
+        if(!keep){card.style.transition='opacity .3s';card.style.opacity='0';setTimeout(renderLabelClips,300);}}
     }}
   loadStats();
 }
