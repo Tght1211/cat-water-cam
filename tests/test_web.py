@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from catcam.stats import StatsStore
 from catcam.recorder import ClipRecorder
 from catcam.feedback import FeedbackStore
+from catcam.dispenser import DispenserStore
 from catcam.web import create_app
 
 
@@ -13,7 +14,9 @@ def _build(tmp_path, frame_provider=lambda: None):
     stats = StatsStore(tmp_path / "s.db")
     recorder = ClipRecorder(clips_dir=tmp_path / "clips", max_clips=10, fps=5)
     feedback = FeedbackStore(db_path=tmp_path / "f.db", training_dir=tmp_path / "train")
-    app = create_app(stats, recorder, feedback, frame_provider, recorder.clips_dir)
+    dispenser = DispenserStore(tmp_path / "d.db", default_ml_per_drink=30.0, default_cycle_days=30)
+    app = create_app(stats, recorder, feedback, frame_provider, recorder.clips_dir,
+                     dispenser=dispenser, dispenser_low_water_pct=0.2)
     return app, stats, recorder, feedback
 
 
@@ -55,6 +58,51 @@ def test_clip_muted_download_falls_back_when_no_ffmpeg(tmp_path, monkeypatch):
     r = TestClient(app).get("/clips/clip_2000.mp4?audio=0")
     assert r.status_code == 200
     assert r.content  # 原文件字节
+
+
+def test_dispenser_initial_state(tmp_path):
+    app, *_ = _build(tmp_path)
+    d = TestClient(app).get("/api/dispenser").json()
+    assert d["has_refill"] is False and d["has_filter"] is False
+    assert d["filter_cycle_days"] == 30
+    assert d["ml_per_drink"] == 30.0 and d["calibrated"] is False
+
+
+def test_dispenser_refill_then_remaining_drops_with_drinks(tmp_path):
+    import sqlite3
+    app, stats, *_ = _build(tmp_path)
+    client = TestClient(app)
+    d = client.post("/api/dispenser/refill", json={"ml": 2000}).json()
+    assert d["has_refill"] and d["last_refill_ml"] == 2000
+    assert d["remaining_ml"] == 2000            # 还没喝
+    # 造 3 段「确认喝水」的事件：时刻在「蓄水之后、下次读取之前」这个当下
+    ev = time.time()
+    for name in ("a.mp4", "b.mp4", "c.mp4"):
+        stats.record_event(ev, name)
+    with sqlite3.connect(stats.db_path) as c:
+        for name in ("a.mp4", "b.mp4", "c.mp4"):
+            c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES (?, 1, NULL)", (name,))
+    d2 = client.get("/api/dispenser").json()
+    assert d2["drinks_since_refill"] == 3
+    assert d2["remaining_ml"] == 2000 - 3 * 30   # 每次 30ml → 剩 1910
+    assert d2["today_ml"] >= 3 * 30
+
+
+def test_dispenser_filter_countdown_and_config(tmp_path):
+    app, *_ = _build(tmp_path)
+    client = TestClient(app)
+    client.post("/api/dispenser/filter")
+    d = client.get("/api/dispenser").json()
+    assert d["has_filter"] and d["filter_days_left"] is not None
+    assert 29 <= d["filter_days_left"] <= 30 and d["need_filter"] is False
+    d2 = client.post("/api/dispenser/config", json={"filter_cycle_days": 45}).json()
+    assert d2["filter_cycle_days"] == 45
+
+
+def test_dispenser_refill_rejects_nonpositive(tmp_path):
+    app, *_ = _build(tmp_path)
+    r = TestClient(app).post("/api/dispenser/refill", json={"ml": 0})
+    assert r.status_code == 400
 
 
 def test_clips_list_reports_max_clips(tmp_path):

@@ -14,6 +14,7 @@ import numpy as np
 import uvicorn
 
 from catcam.config import load_config
+from catcam.dispenser import DispenserStore
 from catcam.feedback import FeedbackStore
 from catcam.recorder import ClipRecorder
 from catcam.stats import StatsStore
@@ -55,7 +56,10 @@ def main(config_path: str = "config.json") -> None:
         print("已塞入 3 段示例视频，可在网页上试标注。")
 
     placeholder = _sample_frame(cfg.frame_width, cfg.frame_height, "DEMO MODE - no camera")
-    app = create_app(stats, recorder, feedback, lambda: placeholder, cfg.clips_dir)
+    dispenser = DispenserStore(
+        cfg.db_path, cfg.dispenser_default_ml_per_drink, cfg.filter_cycle_days)
+    app = create_app(stats, recorder, feedback, lambda: placeholder, cfg.clips_dir,
+                     dispenser=dispenser, dispenser_low_water_pct=cfg.dispenser_low_water_pct)
     print(
         f"演示网页已启动（绑定 {cfg.web_host}:{cfg.web_port}）；"
         f"本机访问 http://127.0.0.1:{cfg.web_port}"

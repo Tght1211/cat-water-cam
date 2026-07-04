@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from catcam.audio import muted_cmd
 from catcam.charts import trend_png
+from catcam.dispenser import estimate_remaining, filter_days_left
 from catcam.classifier import DrinkingClassifier
 from catcam.recorder import ClipRecorder
 from catcam.feedback import FeedbackStore
@@ -198,6 +199,31 @@ main{padding:30px 0 90px}
 @keyframes indet{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}
 .pbar-lab{display:flex;justify-content:space-between;gap:10px;margin-top:9px;
   font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* 饮水机卡片 */
+.disp-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.disp-lab{font-size:13px;color:var(--muted);font-weight:600}
+.disp-remain{font-size:15px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.wbar-track{height:16px;border-radius:980px;background:var(--bg);border:1px solid var(--line);overflow:hidden;margin:10px 0 6px}
+.wbar-fill{height:100%;border-radius:980px;background:linear-gradient(90deg,var(--accent2),var(--accent));
+  transition:width .5s cubic-bezier(.22,1,.36,1)}
+.wbar-fill.low{background:linear-gradient(90deg,var(--amber),var(--red))}
+.disp-warn{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;
+  padding:3px 10px;border-radius:980px;background:rgba(255,59,48,.14);color:var(--red)}
+.disp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0 4px}
+@media (max-width:640px){.disp-grid{grid-template-columns:1fr}}
+.disp-cell{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:13px 15px}
+.disp-cell .dc-k{font-size:12px;color:var(--muted);margin-bottom:6px}
+.disp-cell .dc-v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.disp-cell .dc-v small{font-size:12px;color:var(--muted);font-weight:600;margin-left:3px}
+.disp-cell.warn{border-color:var(--red);background:rgba(255,59,48,.06)}
+.disp-cell.warn .dc-v{color:var(--red)}
+.disp-btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.disp-btns button{border:1px solid var(--line);background:var(--surface);color:var(--ink);
+  border-radius:11px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s}
+.disp-btns button:hover{background:var(--bg)}
+.disp-btns button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.disp-btns button.primary:hover{filter:brightness(1.05)}
+.disp-mpd{margin-top:12px;font-size:12px;color:var(--muted)}
 
 /* 视频：筛选 + 懒加载缩略图 */
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:20px}
@@ -354,6 +380,8 @@ main{padding:30px 0 90px}
 </div>
 <div class="card" style="margin-top:20px"><div class="card-h">今日时间线 <span id="tlNow" style="font-weight:400;text-transform:none;letter-spacing:0"></span></div>
 <div class="card-b"><div id="timeline" class="timeline"></div></div></div>
+<div class="card" style="margin-top:20px"><div class="card-h">饮水机 <span class="card-h-note" id="dispNote"></span></div>
+<div class="card-b"><div id="dispBody"></div></div></div>
 </section>
 
 <!-- 趋势 -->
@@ -447,11 +475,67 @@ function show(t){
   $$('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
   $$('.tab').forEach(s=>s.classList.toggle('on',s.id==='tab-'+t));
   history.replaceState(null,'','#'+t);
+  if(t==='home')loadDispenser();
   if(t==='trend')renderTrend();
   if(t==='clips')loadClips();
   if(t==='train'){pollTrain();pollTrainVideo();}
 }
 $$('.tabs button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
+
+/* 饮水机：剩余水量反推 + 滤芯倒计时 + 喝水量(ml)自校准 */
+let dispLastMl=2000;
+function relTime(ts){if(!ts)return '—';const s=Date.now()/1000-ts;
+  if(s<60)return '刚刚'; if(s<3600)return Math.floor(s/60)+' 分钟前';
+  if(s<86400)return Math.floor(s/3600)+' 小时前'; return Math.floor(s/86400)+' 天前';}
+function dispBtns(d){return `<div class="disp-btns">
+  <button class="primary" onclick="dispRefill()">加满水</button>
+  <button onclick="dispFilter()">换了滤芯</button>
+  <button onclick="dispCycle(${d.filter_cycle_days})">滤芯周期（${d.filter_cycle_days} 天）</button></div>`;}
+function renderDispenser(d){
+  const body=$('#dispBody'),note=$('#dispNote');
+  if(!d.has_refill){
+    note.textContent='';
+    body.innerHTML=`<div style="color:var(--muted);font-size:14px;line-height:1.7">还没记录蓄水。点 <b>「加满水」</b> 填这次加了多少毫升，之后会按小猫喝水次数自动反推剩余水量、快没水时提醒你。</div>${dispBtns(d)}`;
+    return;
+  }
+  const pct=d.remaining_pct==null?0:Math.round(d.remaining_pct*100);
+  const low=d.need_water,fdays=d.filter_days_left,fWarn=d.need_filter;
+  note.textContent=low?'该加水了':(fWarn?'该换滤芯了':'');
+  body.innerHTML=`
+    <div class="disp-top"><span class="disp-lab">剩余水量</span>
+      <span class="disp-remain">约 ${d.remaining_ml} / ${d.last_refill_ml} ml　${pct}%</span></div>
+    <div class="wbar-track"><div class="wbar-fill ${low?'low':''}" style="width:${Math.max(pct,2)}%"></div></div>
+    ${low?`<span class="disp-warn">${I.drop} 水不多了，该加水</span>`:''}
+    <div class="disp-grid">
+      <div class="disp-cell"><div class="dc-k">上次蓄水</div><div class="dc-v" style="font-size:16px">${relTime(d.last_refill_ts)}</div></div>
+      <div class="disp-cell ${fWarn?'warn':''}"><div class="dc-k">滤芯${fWarn?'（该换了）':'剩余'}</div>
+        <div class="dc-v">${!d.has_filter?'—':(fdays<=0?'超期':fdays.toFixed(0))}<small>${d.has_filter&&fdays>0?'天':''}</small></div></div>
+      <div class="disp-cell"><div class="dc-k">今日约喝</div><div class="dc-v">${d.today_ml}<small>ml</small></div></div>
+    </div>
+    <div class="disp-mpd">每次约 <b>${d.ml_per_drink}</b> ml（${d.calibrated?'自校准':'默认值'}）· 蓄水以来已喝 ${d.drinks_since_refill} 次</div>
+    ${dispBtns(d)}`;
+}
+async function loadDispenser(){
+  try{const d=await (await fetch('/api/dispenser')).json();
+    if(d&&!d.detail){if(d.last_refill_ml)dispLastMl=d.last_refill_ml;renderDispenser(d);}}catch(e){}
+}
+async function dispRefill(){
+  const v=prompt('这次加了多少毫升水？',String(dispLastMl||2000));if(v===null)return;
+  const ml=parseFloat(v);if(!(ml>0)){alert('请输入大于 0 的毫升数');return;}
+  const d=await (await fetch('/api/dispenser/refill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ml})})).json();
+  if(d&&!d.detail)renderDispenser(d);
+}
+async function dispFilter(){
+  if(!confirm('确认已更换滤芯？将从今天重新计时。'))return;
+  const d=await (await fetch('/api/dispenser/filter',{method:'POST'})).json();
+  if(d&&!d.detail)renderDispenser(d);
+}
+async function dispCycle(cur){
+  const v=prompt('滤芯多少天换一次？',String(cur||30));if(v===null)return;
+  const days=parseInt(v,10);if(!(days>=1)){alert('请输入 ≥1 的天数');return;}
+  const d=await (await fetch('/api/dispenser/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filter_cycle_days:days})})).json();
+  if(d&&!d.detail)renderDispenser(d);
+}
 
 /* 概览统计（轮询） */
 async function loadStats(){
@@ -735,6 +819,7 @@ async function activate(id,mode){
 const start=(location.hash||'#home').slice(1);
 show(['home','trend','clips','train'].includes(start)?start:'home');
 loadStats();setInterval(loadStats,5000);
+loadDispenser();setInterval(loadDispenser,15000);
 </script></body></html>"""
 
 
@@ -753,6 +838,8 @@ def create_app(
     registry=None,
     active_model=None,
     video_trainer=None,
+    dispenser=None,
+    dispenser_low_water_pct: float = 0.2,
 ) -> FastAPI:
     app = FastAPI()
     clips_dir = Path(clips_dir)
@@ -790,6 +877,82 @@ def create_app(
             "hourly": buckets["hourly"],
             "weekday": buckets["weekday"],
         }
+
+    def _dispenser_payload() -> dict:
+        st = dispenser.get_state()
+        now = time.time()
+        mpd = st["ml_per_drink"]
+        refill_ts, refill_ml = st["last_refill_ts"], st["last_refill_ml"]
+        drinks_since = stats.count_between(refill_ts, now) if refill_ts > 0 else 0
+        remaining = estimate_remaining(refill_ml, drinks_since, mpd) if refill_ml > 0 else 0.0
+        remaining_pct = (remaining / refill_ml) if refill_ml > 0 else None
+        fdl = (filter_days_left(st["last_filter_change_ts"], st["filter_cycle_days"], now)
+               if st["last_filter_change_ts"] > 0 else None)
+        # 今日约喝 ml = 今日喝水次数 × 每次 ml
+        d0, d1 = day_bounds(datetime.now())
+        today_ml = stats.count_between(d0, d1) * mpd
+        return {
+            "has_refill": refill_ts > 0,
+            "has_filter": st["last_filter_change_ts"] > 0,
+            "last_refill_ts": refill_ts,
+            "last_refill_ml": refill_ml,
+            "drinks_since_refill": drinks_since,
+            "remaining_ml": round(remaining),
+            "remaining_pct": remaining_pct,
+            "ml_per_drink": round(mpd, 1),
+            "calibrated": st["calib_drinks"] > 0,
+            "today_ml": round(today_ml),
+            "last_filter_change_ts": st["last_filter_change_ts"],
+            "filter_cycle_days": st["filter_cycle_days"],
+            "filter_days_left": None if fdl is None else round(fdl, 1),
+            "need_water": bool(refill_ts > 0 and remaining_pct is not None
+                               and remaining_pct < dispenser_low_water_pct),
+            "need_filter": bool(fdl is not None and fdl <= 0),
+        }
+
+    @app.get("/api/dispenser")
+    def dispenser_get():
+        if dispenser is None:
+            raise HTTPException(status_code=400, detail="未启用饮水机")
+        return _dispenser_payload()
+
+    @app.post("/api/dispenser/refill")
+    def dispenser_refill(body: dict = Body(default={})):
+        if dispenser is None:
+            raise HTTPException(status_code=400, detail="未启用饮水机")
+        try:
+            ml = float(body.get("ml", 0))
+        except (TypeError, ValueError):
+            ml = 0.0
+        if ml <= 0:
+            raise HTTPException(status_code=400, detail="加水量要 > 0")
+        now = time.time()
+        st = dispenser.get_state()
+        prev_drinks = stats.count_between(st["last_refill_ts"], now) if st["last_refill_ts"] > 0 else 0
+        dispenser.refill(ml=ml, now=now, prev_drinks=prev_drinks)
+        return _dispenser_payload()
+
+    @app.post("/api/dispenser/filter")
+    def dispenser_filter():
+        if dispenser is None:
+            raise HTTPException(status_code=400, detail="未启用饮水机")
+        dispenser.mark_filter(time.time())
+        return _dispenser_payload()
+
+    @app.post("/api/dispenser/config")
+    def dispenser_config(body: dict = Body(default={})):
+        if dispenser is None:
+            raise HTTPException(status_code=400, detail="未启用饮水机")
+        days = body.get("filter_cycle_days")
+        if days is not None:
+            try:
+                d = int(days)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="周期要是整数天")
+            if d < 1:
+                raise HTTPException(status_code=400, detail="周期至少 1 天")
+            dispenser.set_cycle(d)
+        return _dispenser_payload()
 
     @app.get("/chart/{span}.png")
     def chart(span: str):

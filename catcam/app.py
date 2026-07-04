@@ -15,6 +15,7 @@ from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
 from catcam.models import ModelRegistry
 from catcam.audio import AudioRing, mux_audio_into
+from catcam.dispenser import DispenserStore
 from catcam.framebuffer import FrameBuffer
 from catcam.judge import VLMClipJudge, route_clip
 from catcam.mailer import Emailer
@@ -190,9 +191,12 @@ def main(config_path: str = "config.json") -> None:
               f"⚠️ 若无声请在『系统设置→隐私与安全性→麦克风』给终端授权。")
 
     latest = LatestFrame()
+    dispenser = DispenserStore(
+        cfg.db_path, cfg.dispenser_default_ml_per_drink, cfg.filter_cycle_days)
     app = create_app(
         stats, recorder, feedback, latest.get, cfg.clips_dir, trainer,
         registry=registry, active_model=active_model, video_trainer=video_trainer,
+        dispenser=dispenser, dispenser_low_water_pct=cfg.dispenser_low_water_pct,
     )
     threading.Thread(
         target=_serve_web, args=(app, cfg.web_host, cfg.web_port), daemon=True
