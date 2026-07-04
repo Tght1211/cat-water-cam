@@ -203,9 +203,8 @@ main{padding:30px 0 90px}
 .src-badge{display:inline-block;margin-left:6px;font-size:11px;padding:1px 7px;border-radius:8px;vertical-align:middle}
 .src-badge.ai{background:rgba(10,132,255,.12);color:var(--accent)}
 .src-badge.human{background:var(--line);color:var(--muted)}
-.thumb .time-badge{position:absolute;left:9px;bottom:9px;background:rgba(0,0,0,.62);color:#fff;
-  border-radius:7px;padding:3px 8px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;
-  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.mrec{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.mrec svg{width:13px;height:13px;color:var(--muted)}
 .thumb video{width:100%;height:100%;display:block;background:#000;object-fit:cover}
 /* 视频时间线分组 + 滚动分页 */
 .day-head{grid-column:1/-1;display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;color:var(--ink);margin:16px 2px 0}
@@ -531,7 +530,6 @@ async function loadClips(){
 function statusHtml(v){return v===true?`<span class="status s-yes"><i></i>真喝水</span>`
   :v===false?`<span class="status s-no"><i></i>没喝</span>`:`<span class="status s-none"><i></i>未标注</span>`;}
 function clipTime(name){const m=String(name).match(/clip_(\\d+)/);return m?new Date(parseInt(m[1],10)):null;}
-function dayKey(d){return d?`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`:'?';}
 function dayLabel(d){
   if(!d)return '未知时间';
   const now=new Date(),a=new Date(now.getFullYear(),now.getMonth(),now.getDate());
@@ -539,6 +537,13 @@ function dayLabel(d){
   const diff=Math.round((a-b)/86400000);
   if(diff===0)return '今天'; if(diff===1)return '昨天';
   return `${d.getMonth()+1} 月 ${d.getDate()} 日`;
+}
+/* 按「小时」分组：比按天更细，能线性看清每个时段录了几段 */
+function hourKey(d){return d?`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}-${d.getHours()}`:'?';}
+function hourLabel(d){
+  if(!d)return '未知时间';
+  const p=n=>String(n).padStart(2,'0');
+  return `${dayLabel(d)} ${p(d.getHours())}:00–${p((d.getHours()+1)%24)}:00`;
 }
 function hhmmss(d){const p=n=>String(n).padStart(2,'0');return d?`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`:'';}
 function filteredClips(){
@@ -553,14 +558,15 @@ function clipCard(n){
     ? `<span class="src-badge ai" title="${esc(m.reason||'')}">🤖 AI ${m.confidence!=null?m.confidence.toFixed(2):''}</span>`
     : `<span class="src-badge human">✋ 人工</span>`);
   const dtxt=d?`<span class="dur-badge">${d.toFixed(1)} 秒</span>`:'';
-  const tbadge=t?`<span class="time-badge">${hhmmss(t)}</span>`:'';
+  // 记录时刻不再压在视频上：只在下方信息区显示（视频上只留时长）
+  const trec=t?`<div class="mrec">${I.clock}<span>${hhmmss(t)}</span></div>`:'';
   const predLine=(pred===undefined)?'':`<div class="mpredline"><span class="mpred ${pred?'y':'n'}">模型：${pred?'真喝水':'没喝'}</span></div>`;
   return `<div class="clip" data-name="${en}">
     <div class="thumb" onclick='playClip(this,${jn})'>
       <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
-      <button class="play" aria-label="播放">${I.play}</button>${tbadge}${dtxt}</div>
+      <button class="play" aria-label="播放">${I.play}</button>${dtxt}</div>
     <div class="meta">
-      <div class="top"><span class="fname">${en}</span>${statusHtml(v)}${srcBadge}</div>${predLine}
+      <div class="top"><span class="fname">${en}</span>${statusHtml(v)}${srcBadge}</div>${trec}${predLine}
       <div class="seg">
         <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
         <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
@@ -574,11 +580,11 @@ function renderClips(){
   if(!clipsData.clips.length){box.innerHTML=`<div class="empty">${I.cam}<div>还没有视频。接上摄像头跑 <code>python -m catcam</code>，猫在水碗停留就会自动录制。</div></div>`;return;}
   const items=filteredClips();
   if(!items.length){box.innerHTML='<div class="empty">这个筛选下没有视频</div>';return;}
-  const dayCounts={}; items.forEach(n=>{const k=dayKey(clipTime(n));dayCounts[k]=(dayCounts[k]||0)+1;});
+  const hourCounts={}; items.forEach(n=>{const k=hourKey(clipTime(n));hourCounts[k]=(hourCounts[k]||0)+1;});
   const shown=items.slice(0,clipPage*CLIP_PAGE);
-  let html='',lastDay=null;
-  shown.forEach(n=>{const d=clipTime(n),k=dayKey(d);
-    if(k!==lastDay){lastDay=k;html+=`<div class="day-head"><span class="day-dot"></span>${dayLabel(d)}<span class="day-n">${dayCounts[k]} 段</span></div>`;}
+  let html='',lastHour=null;
+  shown.forEach(n=>{const d=clipTime(n),k=hourKey(d);
+    if(k!==lastHour){lastHour=k;html+=`<div class="day-head"><span class="day-dot"></span>${hourLabel(d)}<span class="day-n">${hourCounts[k]} 段</span></div>`;}
     html+=clipCard(n);});
   const remaining=items.length-shown.length;
   if(remaining>0)html+=`<div class="clip-more" id="clipSentinel" onclick="clipPage++;renderClips()">下滑加载更多 · 还有 ${remaining} 段</div>`;
