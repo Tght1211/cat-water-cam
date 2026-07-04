@@ -155,15 +155,39 @@ main{padding:30px 0 90px}
 .cval{fill:var(--ink);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
 .cxlab{fill:var(--muted);font-size:11px}
 .cbase{stroke:var(--line);stroke-width:1}
-/* 趋势页：环比 + 两张并排小图 */
+/* 趋势页：状态卡 + 时段热力条 + 日历热力 */
 .card-h-note{font-weight:500;text-transform:none;letter-spacing:0;color:var(--accent)}
-.delta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:2px 2px 18px;
-  color:var(--muted);font-size:13.5px;font-variant-numeric:tabular-nums}
-.delta b{color:var(--ink);font-weight:600;font-size:15px}
-.delta .up{color:var(--green);font-weight:600} .delta .down{color:var(--red);font-weight:600}
-.delta .flat{color:var(--muted);font-weight:600}
-.mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px}
-@media (max-width:760px){.mini-grid{grid-template-columns:1fr}}
+.hero-card{display:flex;align-items:center;gap:22px;background:var(--surface);border:1px solid var(--line);
+  border-radius:20px;box-shadow:var(--shadow);padding:22px 26px;margin-bottom:20px}
+.hero-drop{width:66px;height:66px;flex:none;border-radius:50%;display:grid;place-items:center;
+  background:rgba(10,132,255,.12);color:var(--accent2)}
+.hero-drop svg{width:36px;height:36px}
+.hero-card.good .hero-drop{background:rgba(52,199,89,.14);color:var(--green)}
+.hero-card.low .hero-drop{background:rgba(255,159,10,.16);color:var(--amber)}
+.hero-card.none .hero-drop{background:var(--bg);color:var(--muted)}
+.hero-main{min-width:0}
+.hero-today{font-size:42px;font-weight:700;letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums}
+.hero-today small{font-size:15px;color:var(--muted);font-weight:600;margin-left:7px;letter-spacing:0}
+.hero-status{display:inline-block;margin-top:12px;font-size:14px;font-weight:600;padding:5px 13px;border-radius:980px;
+  background:rgba(10,132,255,.12);color:var(--accent)}
+.hero-card.good .hero-status{background:rgba(52,199,89,.14);color:var(--green)}
+.hero-card.low .hero-status{background:rgba(255,159,10,.16);color:var(--amber)}
+.hero-card.none .hero-status{background:var(--bg);color:var(--muted)}
+.hero-sub{margin-top:12px;color:var(--muted);font-size:13.5px;font-variant-numeric:tabular-nums}
+.hero-sub b{color:var(--ink);font-weight:600}
+/* 24 小时热力条 */
+.heatrow{display:grid;grid-template-columns:repeat(24,1fr);gap:3px}
+.heatrow .hcell{height:38px;border-radius:5px;transition:transform .12s}
+.heatrow .hcell:hover{transform:scaleY(1.08)}
+.heataxis{display:flex;justify-content:space-between;margin-top:8px;color:var(--muted);
+  font-size:11px;font-variant-numeric:tabular-nums}
+/* 日历热力 */
+.calheat{display:flex;flex-wrap:wrap;gap:6px}
+.calheat .ccell{width:38px;height:38px;border-radius:8px;display:grid;place-items:center;
+  font-size:11px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;transition:transform .12s}
+.calheat .ccell:hover{transform:scale(1.08)}
+.callegend{display:flex;align-items:center;gap:5px;margin-top:14px;color:var(--muted);font-size:12px}
+.callegend .cl{width:16px;height:16px;border-radius:4px;display:inline-block}
 /* 训练进度条 */
 .pbar{margin-top:14px}
 .pbar-track{height:9px;border-radius:980px;background:var(--bg);border:1px solid var(--line);
@@ -334,25 +358,27 @@ main{padding:30px 0 90px}
 
 <!-- 趋势 -->
 <section id="tab-trend" class="tab">
-<div class="head"><div><h2>喝水趋势</h2><p>每日饮水次数变化</p></div>
+<div class="head"><div><h2>喝水趋势</h2><p>一眼看懂小猫的喝水情况</p></div>
 <div class="seg-ctl" id="rangeCtl">
 <button class="on" onclick="setRange(7,this)">近 7 天</button>
 <button onclick="setRange(30,this)">近 30 天</button>
 </div></div>
-<div class="kpis">
-<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt1"></span>期间总计</div><div class="k-val"><span id="tkTotal">–</span><small>次</small></div></div>
-<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt2"></span>日均</div><div class="k-val"><span id="tkAvg">–</span><small>次</small></div></div>
-<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt3"></span>单日最多</div><div class="k-val"><span id="tkMax">–</span><small>次</small></div></div>
-<div class="kpi"><div class="k-top"><span class="k-ico" id="ickt4"></span>活跃天数</div><div class="k-val" id="tkActive">–</div><div class="mmeta" style="margin-top:6px">有喝水记录的天数</div></div>
+<div class="hero-card">
+<div class="hero-drop" id="heroDrop"></div>
+<div class="hero-main">
+<div class="hero-today"><span id="heroToday">–</span><small>次 · 今日</small></div>
+<div class="hero-status" id="heroStatus">–</div>
+<div class="hero-sub" id="heroSub"></div>
 </div>
-<div class="delta" id="trendDelta"></div>
-<div class="card"><div class="card-h">每日喝水次数</div><div class="card-b">
-<div class="chartwrap" id="chart"></div>
+</div>
+<div class="card"><div class="card-h">一天里什么时候爱喝水 <span class="card-h-note" id="hourPeak"></span></div><div class="card-b">
+<div class="heatrow" id="hourHeat"></div>
+<div class="heataxis"><span>0</span><span>6</span><span>12</span><span>18</span><span>24 点</span></div>
 </div></div>
-<div class="mini-grid">
-<div class="card"><div class="card-h">时段分布 <span class="card-h-note" id="hourPeak"></span></div><div class="card-b"><div class="chartwrap" id="chartHour"></div></div></div>
-<div class="card"><div class="card-h">星期分布 <span class="card-h-note" id="wdPeak"></span></div><div class="card-b"><div class="chartwrap" id="chartWeekday"></div></div></div>
-</div>
+<div class="card"><div class="card-h">最近每天喝了多少 <span class="card-h-note" id="calNote"></span></div><div class="card-b">
+<div class="calheat" id="calHeat"></div>
+<div class="callegend"><span>少</span><i class="cl" data-l="0"></i><i class="cl" data-l="1"></i><i class="cl" data-l="2"></i><i class="cl" data-l="3"></i><i class="cl" data-l="4"></i><span>多</span></div>
+</div></div>
 </section>
 
 <!-- 视频 -->
@@ -414,7 +440,6 @@ const I={
 };
 $('#ic1').innerHTML=I.drop; $('#ic2').innerHTML=I.cal; $('#ic3').innerHTML=I.avg; $('#ic4').innerHTML=I.clock;
 $('#ict1').innerHTML=I.cam; $('#ict2').innerHTML=I.drop; $('#ict3').innerHTML=I.check; $('#ict4').innerHTML=I.avg;
-$('#ickt1').innerHTML=I.drop; $('#ickt2').innerHTML=I.avg; $('#ickt3').innerHTML=I.clock; $('#ickt4').innerHTML=I.cal;
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
 /* 标签页切换 —— 视频只在打开「视频」页时才加载，避免一进来全部转圈 */
@@ -460,60 +485,39 @@ function renderTimeline(times){
 }
 /* 趋势图（原生 SVG，Apple Health 风） */
 let trendDays=7;
-function drawChart(box,pts){
-  const W=760,H=240,L=12,R=12,T=26,B=30,ph=H-T-B,pw=W-L-R;
-  const vals=pts.map(p=>p.count),maxV=Math.max(1,...vals),n=pts.length;
-  const slot=pw/n,bw=Math.min(40,slot*0.62),every=Math.ceil(n/9);
-  const bx=i=>L+slot*i+(slot-bw)/2,bh=v=>v/maxV*ph;
-  let bars='',vtxt='',xlab='';
-  pts.forEach((p,i)=>{const h=bh(p.count),x=bx(i),y=T+ph-h,last=i===n-1;
-    bars+=`<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h,.001).toFixed(1)}" rx="${Math.min(bw/2,7).toFixed(1)}" fill="url(#${last?'gT':'gB'})" style="animation-delay:${i*20}ms"><title>${p.date}　${p.count} 次</title></rect>`;
-    if(p.count>0)vtxt+=`<text class="cval" x="${(x+bw/2).toFixed(1)}" y="${(y-8).toFixed(1)}" text-anchor="middle">${p.count}</text>`;
-    if((i%every===0&&n-1-i>=every)||last)xlab+=`<text class="cxlab" x="${(x+bw/2).toFixed(1)}" y="${H-10}" text-anchor="middle">${p.date}</text>`;});
-  box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="喝水趋势"><defs>
-    <linearGradient id="gB" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent2)"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".75"/></linearGradient>
-    <linearGradient id="gT" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--green)"/><stop offset="1" stop-color="var(--accent2)" stop-opacity=".8"/></linearGradient></defs>
-    <line class="cbase" x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}"/>${bars}${vtxt}${xlab}</svg>`;
-}
-/* 紧凑小图：一排小柱 + 每隔 everyLabel 个标一次横轴；gid 给各自的渐变唯一 id */
-function drawMini(box,labels,vals,gid,everyLabel){
-  const W=380,H=176,L=8,R=8,T=22,B=28,ph=H-T-B,pw=W-L-R;
-  const maxV=Math.max(1,...vals),n=vals.length,slot=pw/n,bw=Math.min(26,slot*0.66);
-  const bx=i=>L+slot*i+(slot-bw)/2;
-  let bars='',xlab='';
-  vals.forEach((v,i)=>{const h=v/maxV*ph,x=bx(i),y=T+ph-h;
-    bars+=`<rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h,.001).toFixed(1)}" rx="${Math.min(bw/2,5).toFixed(1)}" fill="url(#${gid})" style="animation-delay:${i*15}ms"><title>${labels[i]}　${v} 次</title></rect>`;
-    if(v>0)bars+=`<text class="cval" style="font-size:10.5px" x="${(x+bw/2).toFixed(1)}" y="${(y-5).toFixed(1)}" text-anchor="middle">${v}</text>`;
-    if(i%everyLabel===0)xlab+=`<text class="cxlab" x="${(x+bw/2).toFixed(1)}" y="${H-9}" text-anchor="middle">${labels[i]}</text>`;});
-  box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img"><defs>
-    <linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent2)"/><stop offset="1" stop-color="var(--accent)" stop-opacity=".7"/></linearGradient></defs>
-    <line class="cbase" x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}"/>${bars}${xlab}</svg>`;
-}
+/* 热力色：值越大蓝色越深（0 用极浅底色）。固定蓝 rgb，深浅两主题都清楚 */
+function heatColor(v,max){const a=v<=0?0.06:0.20+0.80*(v/Math.max(1,max));return `rgba(10,132,255,${a.toFixed(3)})`;}
 function peakLabel(vals,fmt){const mx=Math.max(0,...vals);if(mx<=0)return '';
-  const i=vals.indexOf(mx);return '高峰 '+fmt(i);}
-function renderDelta(cur,prev){
-  const el=$('#trendDelta');
-  if(!prev){el.innerHTML=`本期共 <b>${cur}</b> 次　·　暂无上一周期数据可比`;return;}
-  const diff=cur-prev,pct=Math.round(Math.abs(diff)/prev*100);
-  const cls=diff>0?'up':diff<0?'down':'flat',arr=diff>0?'↑':diff<0?'↓':'→';
-  const word=diff>0?'多':diff<0?'少':'持平';
-  el.innerHTML=`本期 <b>${cur}</b> 次　<span class="${cls}">${arr} ${pct}%</span>　比上一周期(<b>${prev}</b> 次)${word}${diff?' '+Math.abs(diff)+' 次':''}`;
-}
+  const i=vals.indexOf(mx);return fmt(i);}
 async function renderTrend(){
   const r=await (await fetch('/api/stats/trend?days='+trendDays)).json();
-  const pts=r.days||[];
-  drawChart($('#chart'),pts);
-  const vals=pts.map(p=>p.count),total=r.total??vals.reduce((a,b)=>a+b,0);
-  const days=pts.length,avg=days?(total/days).toFixed(1):'0',mx=Math.max(0,...vals);
-  $('#tkTotal').textContent=total; $('#tkAvg').textContent=avg;
-  $('#tkMax').textContent=mx; $('#tkActive').textContent=`${r.active_days??0} / ${days}`;
-  renderDelta(total, r.prev_total||0);
-  const HOURS=Array.from({length:24},(_,i)=>String(i));
-  drawMini($('#chartHour'),HOURS,r.hourly||[],'gH',3);
-  $('#hourPeak').textContent=peakLabel(r.hourly||[],i=>`${i}:00–${(i+1)%24}:00`);
-  const WD=['一','二','三','四','五','六','日'];
-  drawMini($('#chartWeekday'),WD,r.weekday||[],'gW',1);
-  $('#wdPeak').textContent=peakLabel(r.weekday||[],i=>'周'+WD[i]);
+  const pts=r.days||[],vals=pts.map(p=>p.count);
+  const total=r.total??vals.reduce((a,b)=>a+b,0),days=pts.length;
+  const avg=days?total/days:0,today=days?vals[vals.length-1]:0;
+  /* 状态卡：今日 vs 日常，一句话点评 */
+  const card=$('.hero-card');
+  let st,cls;
+  if(today===0){st='今天还没喝水 🐾';cls='none';}
+  else if(avg>0&&today>=avg*1.15){st='喝得挺积极 🐱';cls='good';}
+  else if(avg>0&&today<=avg*0.6){st='今天偏少，多留意 💧';cls='low';}
+  else{st='喝水正常 👍';cls='ok';}
+  card.className='hero-card '+cls;
+  $('#heroDrop').innerHTML=I.drop;
+  $('#heroToday').textContent=today;
+  $('#heroStatus').textContent=st;
+  const prev=r.prev_total||0;
+  const deltaTxt=prev?`　·　环比 ${total>=prev?'▲':'▼'} ${Math.round(Math.abs(total-prev)/prev*100)}%`:'';
+  $('#heroSub').innerHTML=`日均 <b>${avg.toFixed(1)}</b> 次　·　近 ${days} 天共 <b>${total}</b> 次　·　活跃 <b>${r.active_days??0}/${days}</b> 天${deltaTxt}`;
+  /* 24 小时热力条 */
+  const hourly=r.hourly||[],hmax=Math.max(1,...hourly);
+  $('#hourHeat').innerHTML=hourly.map((v,h)=>`<div class="hcell" style="background:${heatColor(v,hmax)}" title="${h}:00–${(h+1)%24}:00 · ${v} 次"></div>`).join('');
+  $('#hourPeak').textContent=peakLabel(hourly,i=>`最爱 ${i}:00 前后`);
+  /* 日历热力 */
+  const cmax=Math.max(1,...vals);
+  $('#calHeat').innerHTML=pts.map(p=>`<div class="ccell" style="background:${heatColor(p.count,cmax)}" title="${p.date} · ${p.count} 次"><span>${p.count||''}</span></div>`).join('');
+  $('#calNote').textContent=`单日最多 ${cmax} 次`;
+  /* 图例色块 */
+  $$('#tab-trend .callegend .cl').forEach(el=>{const l=+el.dataset.l;el.style.background=heatColor(l,4);});
 }
 function setRange(d,btn){trendDays=d;for(const b of $('#rangeCtl').children)b.classList.toggle('on',b===btn);renderTrend();}
 
