@@ -26,6 +26,21 @@ def test_index_serves_html(tmp_path):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_audio_status_exposes_runtime_health(tmp_path):
+    app, stats, recorder, feedback = _build(tmp_path)
+    assert TestClient(app).get("/api/audio/status").json() == {
+        "enabled": False, "available": False
+    }
+    app2 = create_app(
+        stats, recorder, feedback, lambda: None, recorder.clips_dir,
+        audio_status_provider=lambda: {"available": True, "buffered_seconds": 12.5},
+    )
+    assert TestClient(app2).get("/api/audio/status").json() == {
+        "enabled": True, "available": True, "buffered_seconds": 12.5
+    }
 
 
 def test_clips_list_includes_label_status(tmp_path):
@@ -41,12 +56,14 @@ def test_clips_list_includes_label_status(tmp_path):
     assert body["labels"]["clip_1000.mp4"] is None
 
 
-def test_clip_download_default_has_attachment(tmp_path):
+def test_clip_playback_is_inline_and_explicit_download_is_attachment(tmp_path):
     app, _, recorder, _ = _build(tmp_path)
     recorder.save_clip([np.zeros((48, 64, 3), np.uint8)], timestamp=1.0)
     r = TestClient(app).get("/clips/clip_1000.mp4")
     assert r.status_code == 200
-    assert "attachment" in r.headers.get("content-disposition", "")
+    assert "content-disposition" not in r.headers
+    dl = TestClient(app).get("/clips/clip_1000.mp4?download=1")
+    assert "attachment" in dl.headers.get("content-disposition", "")
 
 
 def test_clip_muted_download_falls_back_when_no_ffmpeg(tmp_path, monkeypatch):
@@ -103,6 +120,13 @@ def test_dispenser_refill_rejects_nonpositive(tmp_path):
     app, *_ = _build(tmp_path)
     r = TestClient(app).post("/api/dispenser/refill", json={"ml": 0})
     assert r.status_code == 400
+
+
+def test_dispenser_refill_rejects_nonfinite_values(tmp_path):
+    app, *_ = _build(tmp_path)
+    client = TestClient(app)
+    assert client.post("/api/dispenser/refill", json={"ml": "nan"}).status_code == 400
+    assert client.post("/api/dispenser/refill", json={"ml": "inf"}).status_code == 400
 
 
 def test_clips_list_reports_max_clips(tmp_path):
@@ -173,6 +197,27 @@ def test_snapshot_returns_jpeg_with_frame(tmp_path):
     assert len(r.content) > 0
 
 
+def test_clip_thumbnail_seeks_to_middle_frame(tmp_path, monkeypatch):
+    import catcam.web as web
+
+    app, _, recorder, _ = _build(tmp_path)
+    path = recorder.clips_dir / "clip_1000.mp4"
+    path.write_bytes(b"placeholder")
+    sought = []
+
+    class FakeCapture:
+        def __init__(self, _path): pass
+        def get(self, prop): return 11 if prop == web.cv2.CAP_PROP_FRAME_COUNT else 0
+        def set(self, prop, value): sought.append((prop, value)); return True
+        def read(self): return True, np.full((24, 32, 3), 127, np.uint8)
+        def release(self): pass
+
+    monkeypatch.setattr(web.cv2, "VideoCapture", FakeCapture)
+    r = TestClient(app).get("/clips/clip_1000.mp4/thumb.jpg")
+    assert r.status_code == 200
+    assert sought == [(web.cv2.CAP_PROP_POS_FRAMES, 5)]
+
+
 def test_post_feedback_persists_label(tmp_path):
     app, _, recorder, feedback = _build(tmp_path)
     frame = np.zeros((48, 64, 3), dtype=np.uint8)
@@ -200,7 +245,7 @@ def test_clips_list_is_newest_first(tmp_path):
     assert clips == ["clip_3000.mp4", "clip_2000.mp4", "clip_1000.mp4"]
 
 
-def test_clips_includes_label_meta(tmp_path):
+def test_clips_exposes_model_and_label_review_fields(tmp_path):
     app, _, recorder, feedback = _build(tmp_path)
     frame = np.zeros((48, 64, 3), dtype=np.uint8)
     recorder.save_clip([frame], timestamp=1.0)
@@ -208,12 +253,25 @@ def test_clips_includes_label_meta(tmp_path):
                         source="ai", confidence=0.8, reason="舔水")
     client = TestClient(app)
     body = client.get("/api/clips").json()
-    assert "meta" in body
-    m = body["meta"]["clip_1000.mp4"]
-    assert m["source"] == "ai" and m["reason"] == "舔水" and m["is_drinking"] is True
+    assert body["labels"]["clip_1000.mp4"] is True
+    assert body["meta"]["clip_1000.mp4"]["source"] == "ai"
+    assert body["predictions"] == {}
+    assert body["prediction_details"] == {}
 
 
-def _build_with_registry(tmp_path):
+def test_clips_exposes_model_prediction_confidence(tmp_path):
+    app, stats, recorder, _ = _build(tmp_path)
+    frame = np.zeros((48, 64, 3), np.uint8)
+    recorder.save_clip([frame], timestamp=3.0)
+    stats.record_event(3.0, "clip_3000.mp4")
+    stats.set_prediction("clip_3000.mp4", 0, "v3", 0.18)
+    body = TestClient(app).get("/api/clips").json()
+    assert body["prediction_details"]["clip_3000.mp4"] == {
+        "drinking": False, "confidence": 0.18, "by": "v3"
+    }
+
+
+def _build_with_registry(tmp_path, video_model_switch=None, video_model_clear=None):
     from catcam.models import ModelRegistry
     from catcam.classifier import ActiveModel
     stats = StatsStore(tmp_path / "s.db")
@@ -222,12 +280,16 @@ def _build_with_registry(tmp_path):
     registry = ModelRegistry(tmp_path / "models" / "registry.json")
     active_model = ActiveModel()
     app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir,
-                     registry=registry, active_model=active_model)
+                     registry=registry, active_model=active_model,
+                     video_model_switch=video_model_switch,
+                     video_model_clear=video_model_clear)
     return app, stats, recorder, feedback, registry, active_model
 
 
 def test_activate_s3d_head_version_does_not_500(tmp_path):
-    app, stats, recorder, feedback, registry, active_model = _build_with_registry(tmp_path)
+    switched = []
+    app, stats, recorder, feedback, registry, active_model = _build_with_registry(
+        tmp_path, video_model_switch=lambda entry, mode: switched.append((entry["id"], mode)))
     head_path = tmp_path / "videohead_1.npz"; head_path.write_bytes(b"x")
     registry.add(path=head_path, top1=0.9, image_counts={"drinking": 5, "not_drinking": 5},
                  label_counts=None, base="s3d+head", epochs=300, imgsz=224, created_ts=1.0)
@@ -235,9 +297,23 @@ def test_activate_s3d_head_version_does_not_500(tmp_path):
     r = client.post("/api/model/activate", json={"id": "v1", "mode": "shadow"})
     assert r.status_code == 200
     assert registry.active_id() == "v1" and registry.active_mode() == "shadow"
-    # 视频版本不该被塞进单帧 active_model（否则会加载成一个 bogus YOLO）；应清空、留给视频裁判。
+    # 视频版本不塞进单帧 active_model，而是立即热切换本地视频裁判。
     assert active_model.active_id is None
-    assert "重启" in (r.json().get("note") or "")
+    assert switched == [("v1", "shadow")]
+    assert "立即生效" in (r.json().get("note") or "")
+
+
+def test_activate_video_model_failure_keeps_registry_unchanged(tmp_path):
+    def fail(_entry, _mode):
+        raise ValueError("坏模型")
+
+    app, _, _, _, registry, _ = _build_with_registry(tmp_path, video_model_switch=fail)
+    head_path = tmp_path / "videohead_1.npz"; head_path.write_bytes(b"x")
+    registry.add(path=head_path, top1=0.9, image_counts={}, label_counts={},
+                 base="s3d+head", epochs=1, imgsz=224, created_ts=1.0)
+    r = TestClient(app).post("/api/model/activate", json={"id": "v1", "mode": "gate"})
+    assert r.status_code == 500
+    assert registry.active_id() is None
 
 
 class _FakeVideoTrainer:

@@ -57,7 +57,10 @@ def test_set_prediction_updates_event(tmp_path):
     db = tmp_path / "t.db"
     store = StatsStore(db)
     store.record_event(100.0, "clip_p.mp4")          # 初始无预测
-    store.set_prediction("clip_p.mp4", 1, "v5")
+    store.set_prediction("clip_p.mp4", 1, "v5", 0.82)
     assert store.clip_predictions().get("clip_p.mp4") is True
+    assert store.clip_prediction_details()["clip_p.mp4"] == {
+        "drinking": True, "confidence": 0.82, "by": "v5"
+    }
     hr = store.model_hitrate("v5")                    # 还没标注 → total 0
     assert hr["total"] == 0

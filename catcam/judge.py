@@ -82,7 +82,9 @@ def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mo
         if local_judge is not None:
             v = local_judge.judge(clip_path)
             if v is not None:
-                stats.set_prediction(name, int(v.drinking), local_judge.version)
+                stats.set_prediction(
+                    name, int(v.drinking), local_judge.version, v.confidence
+                )
                 shadow_pred = v.drinking
 
     if authority is not None and authority.drinking and photo is not None:

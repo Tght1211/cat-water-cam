@@ -1,5 +1,6 @@
 import numpy as np
-from catcam.app import LatestFrame
+from catcam.app import LatestFrame, VideoJudgeRuntime
+from catcam.videojudge import DrinkingHead
 
 
 def test_latest_frame_roundtrip():
@@ -18,3 +19,17 @@ def test_latest_frame_roundtrip():
     assert now == 123.0 and night is True
     sframe[1, 1, 1] = 77
     assert lf.get_state()[1][1, 1, 1] != 77
+
+
+def test_video_judge_runtime_hot_switches_atomically(tmp_path):
+    path = tmp_path / "head.npz"
+    DrinkingHead(
+        weight=np.ones(4), bias=0, mean=np.zeros(4), std=np.ones(4)
+    ).save(path)
+    runtime = VideoJudgeRuntime()
+    assert runtime.snapshot() == (None, "shadow")
+    runtime.activate({"id": "v2", "path": str(path)}, "gate")
+    judge, mode = runtime.snapshot()
+    assert judge.version == "v2" and mode == "gate"
+    runtime.clear()
+    assert runtime.snapshot() == (None, "shadow")

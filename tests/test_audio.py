@@ -39,6 +39,19 @@ def test_slice_clamps_out_of_range():
     assert s == b"zz" * 1000
 
 
+def test_status_reports_buffer_and_mux_results():
+    r = AudioRing("f", "mic", sample_rate=1000, max_seconds=10)
+    r._ingest(10.0, b"zz" * 1500)
+    r.available = True
+    r.record_mux_result("a.mp4", True)
+    r.record_mux_result("b.mp4", False)
+    status = r.status()
+    assert status["available"] is True
+    assert status["buffered_seconds"] == 1.5
+    assert status["mux_successes"] == 1 and status["mux_failures"] == 1
+    assert status["last_mux_clip"] == "b.mp4"
+
+
 def test_capture_cmd_has_format_device_and_pcm_output():
     c = capture_cmd("avfoundation", ":1", 16000)
     assert "ffmpeg" in c[0]
@@ -64,3 +77,19 @@ def test_mux_audio_into_fail_open_on_empty_pcm(tmp_path):
     v.write_bytes(b"not a real mp4")
     assert mux_audio_into(v, b"", 16000) is False   # 空 pcm → 不动、返回 False
     assert v.read_bytes() == b"not a real mp4"       # 原文件没被破坏
+
+
+def test_mux_audio_into_fail_open_on_timeout(tmp_path, monkeypatch):
+    import subprocess
+    import catcam.audio as audio
+
+    v = tmp_path / "clip.mp4"
+    v.write_bytes(b"video")
+    monkeypatch.setattr(audio.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(audio.subprocess, "run", timeout)
+    assert mux_audio_into(v, b"\x00\x00", timeout_seconds=0.01) is False
+    assert v.read_bytes() == b"video"

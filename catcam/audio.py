@@ -49,7 +49,8 @@ def muted_cmd(video: str) -> list[str]:
     ]
 
 
-def mux_audio_into(video_path, pcm: bytes, sample_rate: int = 16000) -> bool:
+def mux_audio_into(video_path, pcm: bytes, sample_rate: int = 16000,
+                   timeout_seconds: float = 60.0) -> bool:
     """把 pcm 合进 video_path（原子替换）。成功 True；任何问题 → 保留原无声视频、返回 False。"""
     video_path = Path(video_path)
     if not pcm:
@@ -62,8 +63,11 @@ def mux_audio_into(video_path, pcm: bytes, sample_rate: int = 16000) -> bool:
         fd, raw = tempfile.mkstemp(suffix=".raw")
         with os.fdopen(fd, "wb") as f:
             f.write(pcm)
-        r = subprocess.run(mux_cmd(str(video_path), raw, str(out), sample_rate),
-                           capture_output=True)
+        r = subprocess.run(
+            mux_cmd(str(video_path), raw, str(out), sample_rate),
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
         if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
             os.replace(out, video_path)
             return True
@@ -105,6 +109,9 @@ class AudioRing:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._stop = False
+        self._mux_successes = 0
+        self._mux_failures = 0
+        self._last_mux_clip: str | None = None
 
     # ---- 纯逻辑（可单测，不碰 ffmpeg）----
     def _ingest(self, now: float, chunk: bytes) -> None:
@@ -136,6 +143,30 @@ class AudioRing:
             b0 = (s0 - self._base_sample) * BYTES_PER_SAMPLE
             b1 = (s1 - self._base_sample) * BYTES_PER_SAMPLE
             return bytes(self._buf[b0:b1])
+
+    def status(self) -> dict:
+        with self._lock:
+            proc = self._proc
+            return {
+                "available": self.available,
+                "process_alive": proc is not None and proc.poll() is None,
+                "buffered_seconds": round(
+                    len(self._buf) / (BYTES_PER_SAMPLE * self.sr), 1
+                ),
+                "device": self.device,
+                "sample_rate": self.sr,
+                "mux_successes": self._mux_successes,
+                "mux_failures": self._mux_failures,
+                "last_mux_clip": self._last_mux_clip,
+            }
+
+    def record_mux_result(self, clip_name: str, success: bool) -> None:
+        with self._lock:
+            self._last_mux_clip = clip_name
+            if success:
+                self._mux_successes += 1
+            else:
+                self._mux_failures += 1
 
     # ---- 采集（起线程；测试不触及）----
     def start(self) -> None:

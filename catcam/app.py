@@ -8,8 +8,7 @@ from pathlib import Path
 import cv2
 import uvicorn
 
-from catcam.classifier import ActiveModel, DrinkingClassifier
-from catcam.ai_labeler import AILabeler
+from catcam.classifier import ActiveModel
 from catcam.config import load_config
 from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
@@ -17,8 +16,6 @@ from catcam.models import ModelRegistry
 from catcam.audio import AudioRing, mux_audio_into
 from catcam.dispenser import DispenserStore
 from catcam.framebuffer import FrameBuffer
-from catcam.judge import VLMClipJudge, route_clip
-from catcam.mailer import Emailer
 from catcam.netutil import lan_ip
 from catcam import nightvision
 from catcam.pipeline import Pipeline
@@ -28,6 +25,7 @@ from catcam.simple import MotionGrayDetector
 from catcam.stats import StatsStore
 from catcam.trainer import TrainingManager
 from catcam.video_trainer import VideoTrainingManager
+from catcam.videojudge import DrinkingHead, LocalVideoClipJudge, S3DFeatureExtractor
 from catcam.vision import CatDetector
 from catcam.web import create_app
 
@@ -91,6 +89,34 @@ def _serve_web(app, host: str, port: int) -> None:
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
+class VideoJudgeRuntime:
+    """可热切换的本地视频裁判；录制线程每段开始判断前取一次快照。"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._judge = None
+        self._mode = "shadow"
+
+    def activate(self, entry: dict, mode: str):
+        path = Path(entry["path"])
+        if not path.exists():
+            raise FileNotFoundError(path)
+        head = DrinkingHead.load(path)
+        judge = LocalVideoClipJudge(S3DFeatureExtractor(), head, entry["id"])
+        with self._lock:
+            self._judge = judge
+            self._mode = mode if mode in ("shadow", "gate") else "shadow"
+
+    def clear(self):
+        with self._lock:
+            self._judge = None
+            self._mode = "shadow"
+
+    def snapshot(self):
+        with self._lock:
+            return self._judge, self._mode
+
+
 def main(config_path: str = "config.json") -> None:
     cfg = load_config(config_path)
 
@@ -101,45 +127,17 @@ def main(config_path: str = "config.json") -> None:
     # 裁剪口径：超量时只删被判「没喝」的段（喝水/未判定永不自动删）。
     # 没喝段的训练价值（抽帧 + s3d 特征缓存）已另存，删 mp4 不影响训练。
     recorder.is_deletable = lambda name: feedback.get_label(name) is False
-    ai_labeler = AILabeler.from_config(feedback, cfg)  # 未启用/缺 key 返回 None
-    if ai_labeler is not None:
-        print(f"AI 自动标注已开启 → {cfg.ai_model}（⚠️ 画面帧会上传外部服务器）")
-    # 整段裁判：第一阶段用 VLM（包 ai_labeler）。它是「发邮件 + 记次数」的唯一权威——
-    # 判「真喝水」才发、才计入；没启用 AI（无 key）则没有裁判，不会发邮件、次数恒 0。
-    judge = VLMClipJudge(ai_labeler) if ai_labeler is not None else None
-    if judge is None and cfg.record_session:
-        print("⚠️ 未启用 AI 裁判（config 里 ai_api_key 为空）："
-              "不会发喝水邮件、今日喝水次数为 0。喝水判定依赖 AI——请填 ai_api_key。")
-    emailer = Emailer(cfg)
     registry = ModelRegistry(cfg.models_dir / "registry.json")
-    # 本地视频裁判（s3d+head）：仅当 registry 当前生效版本是视频模型时加载。
-    # shadow=影子评估（VLM 仍权威）；gate=本地当权威且不再调 VLM。其余情况 = None（第一阶段行为）。
-    local_video_judge = None
-    local_video_mode = "shadow"
-    _active = registry.get(registry.active_id()) if registry.active_id() else None
-    if _active and _active.get("base") == "s3d+head":
+    video_judge_runtime = VideoJudgeRuntime()
+    active_entry = registry.get(registry.active_id()) if registry.active_id() else None
+    if active_entry and active_entry.get("base") == "s3d+head":
         try:
-            from catcam.videojudge import S3DFeatureExtractor, DrinkingHead, LocalVideoClipJudge
-            _head = DrinkingHead.load(_active["path"])
-            local_video_judge = LocalVideoClipJudge(S3DFeatureExtractor(), _head, _active["id"])
-            local_video_mode = registry.active_mode()
-            tip = "本地当权威、不调 VLM" if local_video_mode == "gate" else "影子评估、VLM 仍权威"
-            print(f"本地视频裁判已加载：{_active['id']}（{local_video_mode} · {tip}）")
+            video_judge_runtime.activate(active_entry, registry.active_mode())
+            print(f"本地视频裁判已加载：{active_entry['id']}（{registry.active_mode()}）")
         except Exception as e:  # noqa: BLE001
-            print(f"本地视频裁判加载失败，忽略（继续用 VLM）：{e}")
+            print(f"本地视频裁判加载失败，暂不启用：{e}")
+    # 喝水结论只接受人工标注。保留模型管理对象仅用于兼容已有 API，不加载、不参与录制。
     active_model = ActiveModel()
-    # 启动时把上次选中的「生效模型」加载进来（若有）。s3d+head 视频版本不走这里
-    # （由上面的 local_video_judge 处理；塞进单帧 active_model 会被 ultralytics 误当 YOLO 加载）。
-    active_path = registry.active_path()
-    _active_is_video = bool(_active and _active.get("base") == "s3d+head")
-    if active_path and Path(active_path).exists() and not _active_is_video:
-        try:
-            mode = registry.active_mode()
-            active_model.set(DrinkingClassifier.from_path(active_path), registry.active_id(), mode)
-            tip = "过滤误触" if mode == "gate" else "测试模式，只评估不拦截录制"
-            print(f"已启用分类器：{registry.active_id()}（{mode} · {tip}）")
-        except Exception as e:  # noqa: BLE001
-            print(f"启用分类器失败，改用简单模型：{e}")
     trainer = TrainingManager(
         cfg.training_dir, cfg.models_dir, cfg.cls_base_model, cfg.train_epochs, cfg.train_imgsz,
         feedback=feedback, registry=registry,
@@ -162,7 +160,7 @@ def main(config_path: str = "config.json") -> None:
         bowl_roi_ratio=cfg.bowl_roi,
         min_overlap_ratio=cfg.min_overlap_ratio,
         presence_detector=MotionGrayDetector(),
-        active_model=active_model,
+        active_model=None,
     )
     session = (
         DrinkSession(
@@ -187,7 +185,7 @@ def main(config_path: str = "config.json") -> None:
             sample_rate=cfg.audio_sample_rate, max_seconds=ring_seconds,
         )
         audio_ring.start()
-        print(f"录音已开启（{cfg.audio_input_format} {cfg.audio_device}）；"
+        print(f"正在启动录音（{cfg.audio_input_format} {cfg.audio_device}）；"
               f"⚠️ 若无声请在『系统设置→隐私与安全性→麦克风』给终端授权。")
 
     latest = LatestFrame()
@@ -196,6 +194,9 @@ def main(config_path: str = "config.json") -> None:
     app = create_app(
         stats, recorder, feedback, latest.get, cfg.clips_dir, trainer,
         registry=registry, active_model=active_model, video_trainer=video_trainer,
+        video_model_switch=video_judge_runtime.activate,
+        video_model_clear=video_judge_runtime.clear,
+        audio_status_provider=(audio_ring.status if audio_ring is not None else None),
         dispenser=dispenser, dispenser_low_water_pct=cfg.dispenser_low_water_pct,
     )
     threading.Thread(
@@ -211,8 +212,6 @@ def main(config_path: str = "config.json") -> None:
             f"网页已启动（绑定 {cfg.web_host}:{cfg.web_port}）；"
             f"本机访问 http://127.0.0.1:{cfg.web_port}"
         )
-    if emailer.enabled:
-        print(f"邮件提醒已开启 → {emailer.to}（最小间隔 {int(emailer.min_interval)}s）")
     if cfg.record_session:
         print(
             f"录制模式：整段会话（前补 {cfg.preroll_seconds:g}s，"
@@ -225,33 +224,41 @@ def main(config_path: str = "config.json") -> None:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_height)
     if not cap.isOpened():
         cap.release()
+        if audio_ring is not None:
+            audio_ring.stop()
         raise RuntimeError(f"打不开视频源： {source!r}")
 
     buf_interval = 1.0 / max(1, cfg.fps)  # 回放缓冲/会话写帧按 fps 节奏，保证时长/速度正确
 
-    def _judge_async(clip_name: str, start_ts: float, photo) -> None:
-        # 会话录完后台编排：按模式决定谁标注/谁判邮件计数/谁影子预测。绝不阻塞采集。
-        if judge is None and local_video_judge is None:
-            return
+    def _finalize_async(res) -> None:
+        # 先合入音频，再由当前生效的本地视频模型判断；都放后台，不阻塞采集。
         def _run():
-            try:
-                route_clip(
-                    clip_path=cfg.clips_dir / clip_name, start_ts=start_ts, photo=photo,
-                    ai_labeler=ai_labeler, local_judge=local_video_judge,
-                    mode=local_video_mode, emailer=emailer, stats=stats, feedback=feedback,
+            if audio_ring is not None and audio_ring.available:
+                pcm = audio_ring.slice(res.audio_start, res.audio_end)
+                muxed = mux_audio_into(
+                    cfg.clips_dir / res.clip_name, pcm, cfg.audio_sample_rate
                 )
-            except Exception as e:  # noqa: BLE001
-                print(f"AI 裁判流程异常（{clip_name}）：{e}")
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _mux_async(res) -> None:
-        # 会话录完后台把对应时段音频合进这段 mp4（原子替换，不阻塞采集；失败则保持无声）。
-        if audio_ring is None or not audio_ring.available:
-            return
-        def _run():
-            pcm = audio_ring.slice(res.audio_start, res.audio_end)
-            if mux_audio_into(cfg.clips_dir / res.clip_name, pcm, cfg.audio_sample_rate):
-                print(f"已为 {res.clip_name} 合入声音。")
+                audio_ring.record_mux_result(res.clip_name, muxed)
+                if muxed:
+                    print(f"已为 {res.clip_name} 合入声音。")
+                else:
+                    print(f"{res.clip_name} 音频合成失败，保留无声视频。")
+            judge, mode = video_judge_runtime.snapshot()
+            if judge is None:
+                return
+            verdict = judge.judge(cfg.clips_dir / res.clip_name)
+            if verdict is None:
+                return
+            stats.set_prediction(
+                res.clip_name, int(verdict.drinking), verdict.by, verdict.confidence
+            )
+            if mode == "gate":
+                feedback.record_machine_label(
+                    res.clip_name, verdict.drinking, source="local",
+                    confidence=verdict.confidence, reason=verdict.reason,
+                )
+            print(f"本地模型 {verdict.by} 判断 {res.clip_name}："
+                  f"{'喝水' if verdict.drinking else '没喝'}（概率 {verdict.confidence:.1%}）")
         threading.Thread(target=_run, daemon=True).start()
 
     # 采集线程：全速读相机 → 更新预览（网页流畅）；按 fps 节奏喂回放缓冲，
@@ -274,17 +281,9 @@ def main(config_path: str = "config.json") -> None:
                     in_roi, since = presence.get()
                     res = session.update(now, frame, in_roi, since, frame_buffer)
                     if res is not None:
-                        print(f"录到一段候选： {res.clip_name}（等 AI 裁判判是否真喝水）")
-                        _mux_async(res)   # 后台把声音合进这段（若开了录音且可用）
-                        # 影子模型对这段的预测（不影响判定，仅记下来供评估）。
-                        pred = active_model.predict(res.photo)
-                        stats.record_event(
-                            res.timestamp, res.clip_name,
-                            predicted=None if pred is None else int(pred),
-                            predicted_by=active_model.active_id,
-                        )
-                        # 整段裁判 → 判「真喝水」才发邮件 + 计入次数；放后台线程绝不阻塞采集。
-                        _judge_async(res.clip_name, res.timestamp, res.photo)
+                        print(f"录到一段候选： {res.clip_name}（等待人工判断）")
+                        stats.record_event(res.timestamp, res.clip_name)
+                        _finalize_async(res)
 
     threading.Thread(target=_capture, daemon=True).start()
 
@@ -304,8 +303,7 @@ def main(config_path: str = "config.json") -> None:
             elif not blocked:
                 clip = pipeline.detect(now, frame, night=night)
                 if clip:
-                    print(f"录到一段候选： {clip}（等 AI 裁判）")
-                    _judge_async(clip, now, frame.copy())
+                    print(f"录到一段候选： {clip}（等待人工判断）")
             time.sleep(cfg.detect_interval_seconds)
     finally:
         if session is not None:

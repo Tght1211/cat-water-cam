@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -128,7 +129,7 @@ nav.menu{position:relative;display:flex;flex-direction:column;gap:3px;padding:8p
 .side-pill .t{font-size:11px;opacity:.9;font-weight:650;margin-top:3px}
 .side-pill svg{width:22px;height:22px;margin-left:auto;opacity:.85}
 
-main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px;max-width:1300px}
+main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px}
 @media (max-width:1020px){
   .side{width:70px}
   .logo{padding:20px 0;justify-content:center}
@@ -384,21 +385,9 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px;max-wi
   opacity:0;transition:opacity .3s}
 .clip:hover::before{opacity:1}
 @media (prefers-reduced-motion:reduce){.clip{animation-duration:.01s;transform:none!important}}
-.thumb{position:relative;aspect-ratio:4/3;background:#05090f;cursor:pointer;overflow:hidden}
-.thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .45s cubic-bezier(.22,1,.36,1),opacity .3s}
-.thumb:hover img{transform:scale(1.07);opacity:.85}
-.thumb video.pv{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .25s}
-.thumb video.pv.on{opacity:1}
-.thumb .pvtag{position:absolute;left:9px;top:9px;background:rgba(4,10,16,.6);color:#fff;border-radius:8px;
-  padding:3px 9px;font-size:10.5px;font-weight:700;letter-spacing:.05em;opacity:0;transition:opacity .25s;
-  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
-.thumb .pvtag.on{opacity:1}
-.thumb .play{position:absolute;inset:0;margin:auto;width:52px;height:52px;border:0;border-radius:50%;
-  background:rgba(255,255,255,.94);color:#0a1420;display:grid;place-items:center;cursor:pointer;
-  box-shadow:0 8px 26px rgba(0,0,0,.4);transition:transform .22s cubic-bezier(.3,1.6,.4,1)}
-.thumb .play svg{width:20px;height:20px;margin-left:3px}
-.thumb:hover .play{transform:scale(1.14)}
-.thumb .dur{position:absolute;right:9px;bottom:9px;background:rgba(4,10,16,.66);color:#fff;
+.thumb{position:relative;aspect-ratio:4/3;background:#05090f;overflow:hidden}
+.thumb .inline-clip{display:block;width:100%;height:100%;object-fit:contain;background:#05090f}
+.thumb .dur{position:absolute;right:9px;top:9px;background:rgba(4,10,16,.66);color:#fff;
   border-radius:8px;padding:3px 9px;font-size:11px;font-weight:650;font-variant-numeric:tabular-nums;
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
 .cmeta{padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
@@ -421,6 +410,20 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px;max-wi
 .seg2 button:active{transform:scale(.94)}
 .seg2 .yes.on{background:var(--green);border-color:var(--green);color:#fff}
 .seg2 .no.on{background:var(--red);border-color:var(--red);color:#fff}
+/* 人工审核：紧凑网格，同屏快速判断多段候选。 */
+#labelClips{grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+#labelClips .review-card{opacity:1;transform:none;animation:none;border-radius:14px}
+#labelClips .review-card:hover{--lift:-2px}
+#labelClips .review-card .thumb{aspect-ratio:4/3}
+#labelClips .review-side{padding:11px 12px 12px;display:flex;flex-direction:column;gap:9px}
+#labelClips .review-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#labelClips .review-title{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums}
+#labelClips .review-side .row{min-width:0}
+#labelClips .review-side .seg2{margin-top:1px}
+#labelClips .review-side .seg2 button{min-height:38px}
+#labelClips .review-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
+@media (min-width:1700px){#labelClips{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:720px){#labelClips{grid-template-columns:1fr}}
 .mpred{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:3px 9px;border-radius:99px}
 .mpred.y{background:var(--green-soft);color:var(--green)}
 .mpred.n{background:var(--amber-soft);color:var(--amber)}
@@ -695,19 +698,19 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px;max-wi
 
 <!-- ============ 实验室 ============ -->
 <section id="pg-lab" class="pg">
-  <div class="ph an" style="--i:0"><div><h1>实验室</h1><p>视频标注 · 模型训练 · 版本管理 —— 进阶功能，普通使用无需进来</p></div>
+  <div class="ph an" style="--i:0"><div><h1>实验室</h1><p>模型先判断 · 人工复核不确定项与纠错 · 用新标注继续训练</p></div>
     <div class="seg-ctl lab-tabs" id="labTabs" style="margin:0">
-      <button class="on" onclick="setLab('label',this)">标注工作台</button>
+      <button class="on" onclick="setLab('label',this)">复核与纠错</button>
       <button onclick="setLab('train',this)">模型训练</button>
       <button onclick="setLab('models',this)">模型版本</button></div></div>
 
   <div class="lab-pane on an" id="lab-label" style="--i:1">
-    <p class="lab-note">给每段点 <b>👍 真喝水 / 👎 没喝</b> 攒训练数据。AI 已自动判定大多数，这里做人工校正；人工标注优先于 AI。</p>
+    <p class="lab-note">默认只列模型没有结果或把握不足的片段。切到「全部」可抽查模型结果；人工改判会覆盖机器标签，并作为下一轮训练的纠错数据。</p>
     <div class="toolbar" id="labelFilters">
-      <button class="fchip on" data-f="all" onclick="setLabelFilter('all',this)">全部</button>
-      <button class="fchip" data-f="none" onclick="setLabelFilter('none',this)">待判定</button>
-      <button class="fchip" data-f="yes" onclick="setLabelFilter('yes',this)">真喝水</button>
-      <button class="fchip" data-f="no" onclick="setLabelFilter('no',this)">没喝</button>
+      <button class="fchip on" data-f="review" onclick="setLabelFilter('review',this)">待复核</button>
+      <button class="fchip" data-f="all" onclick="setLabelFilter('all',this)">全部</button>
+      <button class="fchip" data-f="yes" onclick="setLabelFilter('yes',this)">模型：喝水</button>
+      <button class="fchip" data-f="no" onclick="setLabelFilter('no',this)">模型：没喝</button>
       <span style="margin-left:auto;color:var(--faint);font-size:12px" id="labCap"></span>
     </div>
     <div class="clips" id="labelClips"></div>
@@ -715,15 +718,13 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px;max-wi
 
   <div class="lab-pane" id="lab-train">
     <div class="krow">
-      <div class="kbox"><div class="k">待标注</div><div class="v"><span id="dsUn">–</span><small>段</small></div></div>
+      <div class="kbox"><div class="k">未人工标注</div><div class="v"><span id="dsUn">–</span><small>段</small></div></div>
       <div class="kbox"><div class="k">已标注 · 未训练</div><div class="v"><span id="dsNew">–</span><small>段</small></div></div>
       <div class="kbox"><div class="k">已标注 · 已训练</div><div class="v"><span id="dsTr">–</span><small>段</small></div></div>
-      <div class="kbox"><div class="k">标注 👍 / 👎（每类需 ≥4）</div><div class="v" id="dsBal">–</div></div>
+      <div class="kbox"><div class="k">标注 喝水 / 没喝（每类需 ≥4）</div><div class="v" id="dsBal">–</div></div>
     </div>
     <div class="card"><div class="card-b">
-      <p class="lab-note">这里训练<b>看动作</b>的视频模型（s3d 冻结特征 + 小头）——喝水是「舔水」这个动作，单帧看不出。
-      首次要为每段抽特征，可能几分钟；重点看报告里的<b>喝水召回</b>（样本不平衡时 top1 会骗人）。
-      训完产出 vN 版本、<b>不自动生效</b>，去「模型版本」手动启用（切视频模型需重启采集进程）。</p>
+      <p class="lab-note">训练看动作的本地视频模型（s3d 冻结特征 + 分类头）。重点查看喝水召回；训练完成后不会自动生效，请到「模型版本」启用。</p>
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
         <button id="trainVideoBtn" class="btn" onclick="trainVideo()">训练视频模型</button>
         <label style="font-size:13px;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px">
@@ -827,7 +828,7 @@ function show(p){
   if(p==='disp')loadDispenser();
   if(p==='records')loadRecords();
   if(p==='trend')renderTrend();
-  if(p==='lab'){loadLabelClips();pollTrain();pollTrainVideo();}
+  if(p==='lab')loadLabelClips();
 }
 window.addEventListener('hashchange',()=>show(location.hash.replace('#/','')||'home'));
 $$('.menu [data-pg]').forEach(b=>b.onclick=()=>go(b.dataset.pg));
@@ -1140,7 +1141,7 @@ function hourLabel(d){if(!d)return '未知时间';const p=n=>String(n).padStart(
 function hhmm(d){const p=n=>String(n).padStart(2,'0');return d?`${p(d.getHours())}:${p(d.getMinutes())}`:'';}
 function hhmmss(d){const p=n=>String(n).padStart(2,'0');return d?`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`:'';}
 function dlUrl(name){const e=encodeURIComponent(name);
-  return ($('#dlAudio')&&$('#dlAudio').checked)?('/clips/'+e):('/clips/'+e+'?audio=0');}
+  return ($('#dlAudio')&&$('#dlAudio').checked)?('/clips/'+e+'?download=1'):('/clips/'+e+'?audio=0&download=1');}
 /* 灯箱播放：支持在当前列表里 ←/→ 或点箭头切上一段/下一段 */
 let lboxList=[],lboxIdx=-1;
 function openClip(name,list){
@@ -1180,10 +1181,8 @@ function recItems(){
 function recCard(n,i){
   const dur=(clipsData.durations||{})[n],t=clipTime(n),en=esc(n),jn=JSON.stringify(n);
   return `<div class="clip" data-name="${en}" style="--i:${Math.min(i,10)}">
-    <div class="thumb" onclick='openClip(${jn},recItems())'>
-      <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
-      <span class="pvtag">预览中</span>
-      <button class="play" aria-label="播放">${I.play}</button>
+    <div class="thumb">
+      <video class="inline-clip" src="/clips/${encodeURIComponent(n)}" poster="/clips/${encodeURIComponent(n)}/thumb.jpg" controls preload="metadata" playsinline></video>
       ${dur?`<span class="dur">${dur.toFixed(1)} 秒</span>`:''}</div>
     <div class="cmeta"><div class="row">
       <span class="ctime">${I.clock}${t?hhmm(t):''}</span>
@@ -1217,7 +1216,7 @@ function renderRecords(){
     recObserver.observe(s);
   }
 }
-/* 卡片高级交互：3D 倾斜 + 跟手光晕 + 悬停 0.45s 就地无声预览（事件委托，绑一次） */
+/* 卡片高级交互：3D 倾斜 + 跟手光晕（事件委托，绑一次）。 */
 function bindCardFx(box){
   if(!box||box.dataset.fx)return; box.dataset.fx='1';
   if(!reduceMotion){
@@ -1231,37 +1230,11 @@ function bindCardFx(box){
       card.style.setProperty('--my',(py*100).toFixed(1)+'%');
     });
   }
-  let pvTimer=null;
-  box.addEventListener('pointerover',e=>{
-    const card=e.target.closest('.clip');
-    const th=e.target.closest('.thumb');
-    if(!th||th.dataset.pv||!card)return;
-    if(e.relatedTarget&&th.contains(e.relatedTarget))return;
-    clearTimeout(pvTimer);
-    pvTimer=setTimeout(()=>{
-      if(th.dataset.pv||!document.body.contains(th))return;
-      const name=card.dataset.name; if(!name)return;
-      th.dataset.pv='1';
-      const v=document.createElement('video');
-      v.className='pv';v.muted=true;v.loop=true;v.playsInline=true;
-      v.src='/clips/'+encodeURIComponent(name);
-      v.oncanplay=()=>{v.classList.add('on');
-        const t=th.querySelector('.pvtag');if(t)t.classList.add('on');
-        v.play().catch(()=>{});};
-      th.appendChild(v);
-    },450);
-  });
   box.addEventListener('pointerout',e=>{
     const card=e.target.closest('.clip');
     if(card&&!(e.relatedTarget&&card.contains(e.relatedTarget))){
       card.style.setProperty('--rx',0);card.style.setProperty('--ry',0);
     }
-    const th=e.target.closest('.thumb'); if(!th)return;
-    if(e.relatedTarget&&th.contains(e.relatedTarget))return;
-    clearTimeout(pvTimer);
-    if(th.dataset.pv){delete th.dataset.pv;
-      const v=th.querySelector('video.pv'); if(v){v.pause();v.remove();}
-      const t=th.querySelector('.pvtag'); if(t)t.classList.remove('on');}
   });
 }
 
@@ -1298,7 +1271,10 @@ async function renderTrend(){
 }
 function setRange(d,btn){trendDays=d;for(const b of $('#rangeCtl').children)b.classList.toggle('on',b===btn);renderTrend();}
 
-/* ---------- 实验室：子页签 ---------- */
+/* ---------- 标注工作台 ---------- */
+let labelFilter='review', labelPage=1;
+const LAB_PAGE=12;
+const REVIEW_LOW=.30, REVIEW_HIGH=.70;
 function setLab(t,btn){
   for(const b of $('#labTabs').children)b.classList.toggle('on',b===btn);
   $$('.lab-pane').forEach(p=>p.classList.toggle('on',p.id==='lab-'+t));
@@ -1306,12 +1282,33 @@ function setLab(t,btn){
   if(t==='train'){pollTrain();pollTrainVideo();}
   if(t==='models')pollTrain();
 }
-
-/* ---------- 标注工作台 ---------- */
-let labelFilter='all', labelPage=1;
-const LAB_PAGE=12;
 function statusTag(v){return v===true?`<span class="tag ok"><i></i>真喝水</span>`
-  :v===false?`<span class="tag bad"><i></i>没喝</span>`:`<span class="tag mute"><i></i>待判定</span>`;}
+  :v===false?`<span class="tag bad"><i></i>没喝</span>`:`<span class="tag mute"><i></i>未人工确认</span>`;}
+function modelDetail(n){
+  const p=(clipsData.prediction_details||{})[n];
+  if(p)return p;
+  const m=(clipsData.meta||{})[n];
+  if(m&&m.source!=='human'&&m.confidence!=null)return {
+    drinking:!!m.is_drinking,
+    confidence:m.is_drinking?m.confidence:1-m.confidence,
+    by:m.source
+  };
+  return null;
+}
+function needsReview(n){
+  const m=(clipsData.meta||{})[n];
+  if(m&&m.source==='human')return false;
+  const p=modelDetail(n);
+  // 旧的影子预测没有保存概率，但已有明确结论；留在「全部」供抽查，不重复塞满复核队列。
+  return !p||p.confidence!=null&&p.confidence>=REVIEW_LOW&&p.confidence<=REVIEW_HIGH;
+}
+function modelTag(n){
+  const p=modelDetail(n);
+  if(!p)return `<span class="tag mute"><i></i>模型未判断</span>`;
+  const pct=p.confidence==null?'':` ${Math.round(p.confidence*100)}%`;
+  const uncertain=needsReview(n)?' · 待复核':'';
+  return `<span class="mpred ${p.drinking?'y':'n'}" title="${esc(p.by||'模型')}">模型：${p.drinking?'喝水':'没喝'}${pct}${uncertain}</span>`;
+}
 async function loadLabelClips(){
   labelPage=1;
   $('#labelClips').innerHTML=skeletons(8);
@@ -1322,40 +1319,31 @@ async function loadLabelClips(){
   renderLabelClips();
 }
 function updateLabelChipCounts(){
-  const lab=clipsData.labels||{};let a=0,n=0,y=0,no=0;
-  clipsData.clips.forEach(c=>{const v=lab[c];a++;if(v==null)n++;else if(v)y++;else no++;});
-  const map={all:`全部 ${a}`,none:`待判定 ${n}`,yes:`真喝水 ${y}`,no:`没喝 ${no}`};
+  let a=0,r=0,y=0,no=0;
+  clipsData.clips.forEach(c=>{const p=modelDetail(c);a++;if(needsReview(c))r++;if(p){p.drinking?y++:no++;}});
+  const map={all:`全部 ${a}`,review:`待复核 ${r}`,yes:`模型：喝水 ${y}`,no:`模型：没喝 ${no}`};
   $$('#labelFilters .fchip').forEach(b=>{if(map[b.dataset.f])b.textContent=map[b.dataset.f];});
 }
 function labelItems(){
-  const lab=clipsData.labels||{};
-  return clipsData.clips.filter(n=>{const v=lab[n];
-    return labelFilter==='all'||(labelFilter==='none'&&v==null)||(labelFilter==='yes'&&v===true)||(labelFilter==='no'&&v===false);});
+  return clipsData.clips.filter(n=>{const p=modelDetail(n);
+    return labelFilter==='all'||(labelFilter==='review'&&needsReview(n))||
+      (labelFilter==='yes'&&p&&p.drinking)||(labelFilter==='no'&&p&&!p.drinking);});
 }
 function labelCard(n,i){
-  const lab=clipsData.labels||{},dur=clipsData.durations||{},pr=clipsData.predictions||{},mt=clipsData.meta||{};
-  const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),pred=pr[n],t=clipTime(n),m=mt[n];
-  const srcBadge=!m?'':(m.source==='ai'
-    ? `<span class="tag ai" title="${esc(m.reason||'')}">🤖 AI</span>`
-    : (m.source==='local'?`<span class="tag ai">🖥 本地</span>`:`<span class="tag mute">✋ 人工</span>`));
-  const predLine=(pred===undefined)?'':`<span class="mpred ${pred?'y':'n'}">模型：${pred?'真喝水':'没喝'}</span>`;
-  const conf=(m&&m.source==='ai'&&m.confidence!=null)
-    ?`<div class="confbar" title="${esc(m.reason||'')}"><span>AI 置信</span><span class="cb-t"><span class="cb-f" style="width:${Math.round(m.confidence*100)}%"></span></span><span>${Math.round(m.confidence*100)}%</span></div>`:'';
-  return `<div class="clip" data-name="${en}" style="--i:${Math.min(i,10)}">
-    <div class="thumb" onclick='openClip(${jn},labelItems())'>
-      <img loading="lazy" src="/clips/${encodeURIComponent(n)}/thumb.jpg" alt="">
-      <span class="pvtag">预览中</span>
-      <button class="play" aria-label="播放">${I.play}</button>
+  const lab=clipsData.labels||{},dur=clipsData.durations||{};
+  const v=lab[n],d=dur[n],en=esc(n),jn=JSON.stringify(n),t=clipTime(n);
+  return `<div class="clip review-card" data-name="${en}">
+    <div class="thumb">
+      <video class="inline-clip" src="/clips/${encodeURIComponent(n)}" poster="/clips/${encodeURIComponent(n)}/thumb.jpg" controls preload="metadata" playsinline></video>
       ${d?`<span class="dur">${d.toFixed(1)} 秒</span>`:''}</div>
-    <div class="cmeta">
-      <div class="row"><span class="ctime">${I.clock}${t?hhmmss(t):''}</span>${statusTag(v)}</div>
-      <div class="row"><span class="fname">${en}</span><span>${srcBadge}${predLine}</span></div>
-      ${conf}
+    <div class="review-side">
+      <div class="review-head"><div class="review-title">${t?dayLabel(t)+' '+hhmmss(t):'候选视频'}</div>${statusTag(v)}</div>
+      <div class="row">${modelTag(n)}</div>
       <div class="seg2">
         <button class="yes ${v===true?'on':''}" onclick='fb(${jn},true)'>${I.check}喝了</button>
         <button class="no ${v===false?'on':''}" onclick='fb(${jn},false)'>${I.x}没喝</button>
       </div>
-      <div class="row"><a class="dlbtn" href="/clips/${encodeURIComponent(n)}" download onclick='this.href=dlUrl(${jn})'>${I.dl}下载</a></div>
+      <div class="review-foot"><span class="fname">${en}</span><a class="dlbtn" href="/clips/${encodeURIComponent(n)}" download onclick='this.href=dlUrl(${jn})'>${I.dl}下载</a></div>
     </div></div>`;
 }
 function renderLabelClips(){
@@ -1363,13 +1351,8 @@ function renderLabelClips(){
   if(!clipsData.clips.length){box.innerHTML=`<div class="empty" style="grid-column:1/-1"><span class="eico">🎬</span>还没有视频可标注。接上摄像头跑 <code>python -m catcam</code>。</div>`;return;}
   const items=labelItems();
   if(!items.length){box.innerHTML='<div class="empty" style="grid-column:1/-1">这个筛选下没有视频</div>';return;}
-  const dayCounts={}; items.forEach(n=>{const k=dayKey(clipTime(n));dayCounts[k]=(dayCounts[k]||0)+1;});
   const shown=items.slice(0,labelPage*LAB_PAGE);
-  let html='',lastDay=null;
-  shown.forEach((n,i)=>{const dt=clipTime(n),k=dayKey(dt);
-    if(k!==lastDay){lastDay=k;
-      html+=`<div class="grp-head"><span class="grp-dot"></span>${dayLabel(dt)}<span class="grp-n">${dayCounts[k]} 段</span></div>`;}
-    html+=labelCard(n,i%LAB_PAGE);});
+  let html=''; shown.forEach((n,i)=>{html+=labelCard(n,i);});
   const remaining=items.length-shown.length;
   if(remaining>0)html+=`<div class="more" onclick="labelPage++;renderLabelClips()">加载更多 · 还有 ${remaining} 段</div>`;
   box.innerHTML=html;
@@ -1386,9 +1369,10 @@ async function fb(clip,is){
     if(card){const stEl=card.querySelector('.tag');if(stEl)stEl.outerHTML=statusTag(is);
       const y=card.querySelector('.seg2 .yes'),no=card.querySelector('.seg2 .no');
       if(y)y.classList.toggle('on',is===true);if(no)no.classList.toggle('on',is===false);
-      if(labelFilter!=='all'){const keep=(labelFilter==='yes'&&is===true)||(labelFilter==='no'&&is===false);
+      if(labelFilter!=='all'){const p=modelDetail(clip);const keep=(labelFilter==='yes'&&p&&p.drinking)||(labelFilter==='no'&&p&&!p.drinking);
         if(!keep){card.style.transition='opacity .3s,transform .3s';card.style.opacity='0';
           card.style.transform='scale(.94)';setTimeout(renderLabelClips,300);}}
+      else{const next=card.nextElementSibling;if(next)next.scrollIntoView({behavior:'smooth',block:'start'});}
     }}
   updateLabelChipCounts();
   toast(is?'已标注：真喝水 💧':'已标注：没喝');
@@ -1401,14 +1385,25 @@ function fmtPct(a){return (typeof a==='number')?(a*100).toFixed(0)+'%':'—';}
 function fmtTime(ts){if(!ts)return '';const d=new Date(ts*1000);
   const p=n=>String(n).padStart(2,'0');return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;}
 async function pollTrain(){
+  const active=$('#activeBox'),models=$('#modelList');
+  if(active&&!active.innerHTML.trim())active.innerHTML='<div class="empty">正在读取模型状态…</div>';
+  if(models&&!models.innerHTML.trim())models.innerHTML='<div class="empty">正在读取模型版本…</div>';
   try{
-    const s=await (await fetch('/api/train/status')).json();
+    const response=await fetch('/api/train/status',{cache:'no-store'});
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    const s=await response.json();
     const ls=s.label_states||{labeled:0,drinking:0,not_drinking:0,untrained:0,trained:0};
     $('#dsUn').textContent=(s.unlabeled??'–');
     $('#dsNew').textContent=ls.untrained; $('#dsTr').textContent=ls.trained;
     $('#dsBal').textContent=`${ls.drinking} / ${ls.not_drinking}`;
     renderActive(s); renderModels(s);
-  }catch(e){}
+  }catch(e){
+    const msg='模型数据加载失败，请刷新重试';
+    if(active)active.innerHTML=`<div class="empty">${msg}</div>`;
+    if(models)models.innerHTML=`<div class="empty">${msg}</div>`;
+    const st=$('#trainVideoStatus');if(st)st.textContent=msg;
+    console.error('加载模型状态失败',e);
+  }
 }
 let trainVideoTimer=null;
 async function trainVideo(){
@@ -1527,6 +1522,9 @@ def create_app(
     registry=None,
     active_model=None,
     video_trainer=None,
+    video_model_switch=None,
+    video_model_clear=None,
+    audio_status_provider=None,
     dispenser=None,
     dispenser_low_water_pct: float = 0.2,
 ) -> FastAPI:
@@ -1535,13 +1533,19 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return INDEX_HTML
+        return HTMLResponse(INDEX_HTML, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/stats/range")
     def stats_range(days: int = 7):
         days = max(1, min(int(days), 90))
         points = stats.daily_counts(datetime.now(), days)
         return {"days": [{"date": d, "count": c} for d, c in points]}
+
+    @app.get("/api/audio/status")
+    def audio_status():
+        if audio_status_provider is None:
+            return {"enabled": False, "available": False}
+        return {"enabled": True, **audio_status_provider()}
 
     @app.get("/api/stats/trend")
     def stats_trend(days: int = 7):
@@ -1613,7 +1617,7 @@ def create_app(
             ml = float(body.get("ml", 0))
         except (TypeError, ValueError):
             ml = 0.0
-        if ml <= 0:
+        if not math.isfinite(ml) or ml <= 0:
             raise HTTPException(status_code=400, detail="加水量要 > 0")
         now = time.time()
         st = dispenser.get_state()
@@ -1701,27 +1705,35 @@ def create_app(
             raise HTTPException(status_code=400, detail="未启用模型管理")
         model_id = body.get("id")  # None = 停用，只用简单模型
         mode = body.get("mode") or "shadow"  # 默认测试模式（不拦截录制）
-        try:
-            registry.set_active(model_id, mode)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="没有这个版本")
         if model_id is None:
             active_model.clear()
+            if video_model_clear is not None:
+                video_model_clear()
         else:
             entry = registry.get(model_id)
+            if entry is None:
+                raise HTTPException(status_code=404, detail="没有这个版本")
             if entry and entry.get("base") == "s3d+head":
-                # 视频模型：不塞进单帧 active_model；清掉单帧模型，视频裁判在重启后按 registry 生效。
+                if video_model_switch is None:
+                    raise HTTPException(status_code=400, detail="当前进程未接入本地视频裁判")
+                try:
+                    video_model_switch(entry, mode)
+                except Exception as e:  # noqa: BLE001
+                    raise HTTPException(status_code=500, detail=f"视频模型加载失败：{e}")
                 active_model.clear()
-                return {"active": registry.active_id(), "mode": registry.active_mode(),
-                        "note": "视频模型已登记生效，重启采集进程后由本地视频裁判接管"}
-            path = registry.active_path()
-            if not path or not Path(path).exists():
-                raise HTTPException(status_code=404, detail="模型文件丢了")
-            try:
-                active_model.set(DrinkingClassifier.from_path(path), model_id, mode)
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(status_code=500, detail=f"加载失败：{e}")
-        return {"active": registry.active_id(), "mode": registry.active_mode()}
+            else:
+                path = entry.get("path")
+                if not path or not Path(path).exists():
+                    raise HTTPException(status_code=404, detail="模型文件丢了")
+                try:
+                    active_model.set(DrinkingClassifier.from_path(path), model_id, mode)
+                except Exception as e:  # noqa: BLE001
+                    raise HTTPException(status_code=500, detail=f"加载失败：{e}")
+                if video_model_clear is not None:
+                    video_model_clear()
+        registry.set_active(model_id, mode)
+        note = "模型已立即生效，将用于下一段录像" if model_id else "模型已停用"
+        return {"active": registry.active_id(), "mode": registry.active_mode(), "note": note}
 
     @app.get("/api/stats/today")
     def today():
@@ -1736,21 +1748,27 @@ def create_app(
         labels = {n: feedback.get_label(n) for n in names}
         durations = {n: clip_duration(clips_dir / n) for n in names}
         preds = stats.clip_predictions()
-        predictions = {n: preds[n] for n in names if n in preds}  # 测试模型对该段的判断
-        meta = {n: feedback.label_meta(n) for n in names}         # 标注来源/置信度/理由
+        predictions = {n: preds[n] for n in names if n in preds}
+        details = stats.clip_prediction_details()
+        prediction_details = {n: details[n] for n in names if n in details}
+        meta = {n: feedback.label_meta(n) for n in names}
         return {"clips": names, "labels": labels, "durations": durations,
-                "predictions": predictions, "meta": meta,
+                "predictions": predictions, "prediction_details": prediction_details,
+                "meta": meta,
                 "max_clips": recorder.max_clips}
 
     @app.get("/clips/{name}/thumb.jpg")
     def clip_thumb(name: str):
-        # 懒加载用的封面：只解码首帧成 jpg，不拉整段视频。
+        # 用中间帧做封面，比开头的空场/刚入画更有判断价值。
         if "/" in name or "\\" in name or ".." in name:
             raise HTTPException(status_code=400, detail="bad name")
         path = clips_dir / name
         if not path.exists():
             raise HTTPException(status_code=404, detail="not found")
         cap = cv2.VideoCapture(str(path))
+        frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if frames > 1:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frames // 2)
         ok, frame = cap.read()
         cap.release()
         if not ok:
@@ -1759,10 +1777,10 @@ def create_app(
         if not ok2:
             raise HTTPException(status_code=500, detail="encode failed")
         return Response(content=buf.tobytes(), media_type="image/jpeg",
-                        headers={"Cache-Control": "max-age=3600"})
+                        headers={"Cache-Control": "no-store"})
 
     @app.get("/clips/{name}")
-    def get_clip(name: str, audio: int = 1):
+    def get_clip(name: str, audio: int = 1, download: int = 0):
         if "/" in name or "\\" in name or ".." in name:
             raise HTTPException(status_code=400, detail="bad name")
         path = clips_dir / name
@@ -1789,8 +1807,9 @@ def create_app(
             return StreamingResponse(
                 _stream(), media_type="video/mp4",
                 headers={"Content-Disposition": f'attachment; filename="{muted_name}"'})
-        return FileResponse(path, media_type="video/mp4",
-                            headers={"Content-Disposition": f'attachment; filename="{name}"'})
+        headers = ({"Content-Disposition": f'attachment; filename="{name}"'}
+                   if download else None)
+        return FileResponse(path, media_type="video/mp4", headers=headers)
 
     @app.get("/snapshot.jpg")
     def snapshot():

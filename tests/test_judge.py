@@ -96,7 +96,8 @@ class _FakeLocalJudge:
 
 class _FakeStats:
     def __init__(self): self.preds = []
-    def set_prediction(self, clip, pred, by): self.preds.append((clip, pred, by))
+    def set_prediction(self, clip, pred, by, confidence=None):
+        self.preds.append((clip, pred, by, confidence))
 
 
 class _FakeFeedback:
@@ -113,7 +114,7 @@ def test_route_shadow_vlm_authority_local_shadow_predicts():
                    local_judge=local, mode="shadow", emailer=em, stats=st, feedback=fb)
     assert r["emailed"] is True            # VLM 是权威、判喝水 → 发
     assert lab.labeled == ["a.mp4"]        # VLM 写了标注
-    assert st.preds == [("a.mp4", 0, "v5")]  # 本地影子预测回填(没喝=0)
+    assert st.preds == [("a.mp4", 0, "v5", 0.9)]  # 同时回填模型概率供不确定性复核
     assert fb.machine == []                # shadow 不写机器计数标签
 
 

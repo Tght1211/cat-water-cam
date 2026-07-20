@@ -43,6 +43,8 @@ class StatsStore:
                 conn.execute("ALTER TABLE events ADD COLUMN predicted INTEGER")
             if "predicted_by" not in ecols:
                 conn.execute("ALTER TABLE events ADD COLUMN predicted_by TEXT")
+            if "predicted_confidence" not in ecols:
+                conn.execute("ALTER TABLE events ADD COLUMN predicted_confidence REAL")
             # labels 表由 FeedbackStore 维护（同一个 db）。这里也 IF NOT EXISTS 一下，
             # 保证统计查询的 LEFT JOIN 永远有表可连（无论两个 store 谁先初始化）。
             conn.execute(
@@ -69,12 +71,19 @@ class StatsStore:
             )
             return int(cur.lastrowid)
 
-    def set_prediction(self, clip_name: str, predicted: int, predicted_by: str | None) -> None:
+    def set_prediction(
+        self,
+        clip_name: str,
+        predicted: int,
+        predicted_by: str | None,
+        confidence: float | None = None,
+    ) -> None:
         """回填某段的「测试模型预测」（影子模式：录完后台判完再写）。更新该 clip 的事件行。"""
         with self._conn() as conn:
             conn.execute(
-                "UPDATE events SET predicted = ?, predicted_by = ? WHERE clip_name = ?",
-                (int(predicted), predicted_by, clip_name),
+                "UPDATE events SET predicted = ?, predicted_by = ?, predicted_confidence = ? "
+                "WHERE clip_name = ?",
+                (int(predicted), predicted_by, confidence, clip_name),
             )
 
     def model_hitrate(self, version: str) -> dict:
@@ -99,6 +108,22 @@ class StatsStore:
                 "WHERE clip_name IS NOT NULL AND predicted IS NOT NULL ORDER BY ts ASC"
             ).fetchall()
         return {name: bool(pred) for name, pred in rows}
+
+    def clip_prediction_details(self) -> dict:
+        """返回每段最新的模型判断、喝水概率和模型版本，供人工复核排序。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT clip_name, predicted, predicted_confidence, predicted_by FROM events "
+                "WHERE clip_name IS NOT NULL AND predicted IS NOT NULL ORDER BY ts ASC"
+            ).fetchall()
+        return {
+            name: {
+                "drinking": bool(pred),
+                "confidence": confidence,
+                "by": predicted_by,
+            }
+            for name, pred, confidence, predicted_by in rows
+        }
 
     def count_between(self, start_ts: float, end_ts: float) -> int:
         # 「真实喝水」= 被 AI/人工明确标注为「喝水」(is_drinking=1) 的事件。
