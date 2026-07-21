@@ -4,11 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "catcam"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]
 include = ["catcam*"]
+
+[tool.setuptools.package-data]
+catcam = ["assets/*.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

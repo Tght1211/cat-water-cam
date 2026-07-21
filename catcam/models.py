@@ -6,8 +6,41 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 from pathlib import Path
+
+
+BUNDLED_VIDEO_MODEL = "pretrained_s3d_head_v11.npz"
+BUNDLED_VIDEO_TOP1 = 0.8914728682170543
+BUNDLED_VIDEO_COUNTS = {"drinking": 57, "not_drinking": 462}
+
+
+def install_bundled_video_model(
+    registry: "ModelRegistry", models_dir: Path, source: Path | None = None
+) -> dict | None:
+    """为空 registry 安装随包发布的视频分类头；已有任何版本时保持用户数据不变。"""
+    if registry.list():
+        return None
+    source = source or Path(__file__).with_name("assets") / BUNDLED_VIDEO_MODEL
+    if not source.exists():
+        return None
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    destination = models_dir / BUNDLED_VIDEO_MODEL
+    shutil.copyfile(source, destination)
+    entry = registry.add(
+        path=destination,
+        top1=BUNDLED_VIDEO_TOP1,
+        image_counts=dict(BUNDLED_VIDEO_COUNTS),
+        label_counts=dict(BUNDLED_VIDEO_COUNTS),
+        base="s3d+head",
+        epochs=300,
+        imgsz=224,
+        created_ts=1784482239.4945889,
+    )
+    registry.set_active(entry["id"], "shadow")
+    return entry
 
 
 class ModelRegistry:

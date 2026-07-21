@@ -8,14 +8,17 @@ from pathlib import Path
 import cv2
 import uvicorn
 
+from catcam.ai_labeler import AILabeler
 from catcam.classifier import ActiveModel
 from catcam.config import load_config
 from catcam.detector import DrinkingDetector
 from catcam.feedback import FeedbackStore
-from catcam.models import ModelRegistry
+from catcam.models import ModelRegistry, install_bundled_video_model
 from catcam.audio import AudioRing, mux_audio_into
 from catcam.dispenser import DispenserStore
 from catcam.framebuffer import FrameBuffer
+from catcam.judge import route_clip
+from catcam.mailer import Emailer
 from catcam.netutil import lan_ip
 from catcam import nightvision
 from catcam.pipeline import Pipeline
@@ -127,7 +130,14 @@ def main(config_path: str = "config.json") -> None:
     # 裁剪口径：超量时只删被判「没喝」的段（喝水/未判定永不自动删）。
     # 没喝段的训练价值（抽帧 + s3d 特征缓存）已另存，删 mp4 不影响训练。
     recorder.is_deletable = lambda name: feedback.get_label(name) is False
+    ai_labeler = AILabeler.from_config(feedback, cfg)
+    if ai_labeler is not None:
+        print(f"外部 AI 裁判已开启：{cfg.ai_model}（画面帧会上传到所配服务）")
+    emailer = Emailer(cfg)
     registry = ModelRegistry(cfg.models_dir / "registry.json")
+    bundled = install_bundled_video_model(registry, cfg.models_dir)
+    if bundled is not None:
+        print(f"已安装内置预训练视频模型：{bundled['id']}（shadow）")
     video_judge_runtime = VideoJudgeRuntime()
     active_entry = registry.get(registry.active_id()) if registry.active_id() else None
     if active_entry and active_entry.get("base") == "s3d+head":
@@ -246,19 +256,21 @@ def main(config_path: str = "config.json") -> None:
             judge, mode = video_judge_runtime.snapshot()
             if judge is None:
                 return
-            verdict = judge.judge(cfg.clips_dir / res.clip_name)
-            if verdict is None:
-                return
-            stats.set_prediction(
-                res.clip_name, int(verdict.drinking), verdict.by, verdict.confidence
+            result = route_clip(
+                clip_path=cfg.clips_dir / res.clip_name,
+                start_ts=res.timestamp,
+                photo=res.photo,
+                ai_labeler=ai_labeler,
+                local_judge=judge,
+                mode=mode,
+                emailer=emailer,
+                stats=stats,
+                feedback=feedback,
             )
-            if mode == "gate":
-                feedback.record_machine_label(
-                    res.clip_name, verdict.drinking, source="local",
-                    confidence=verdict.confidence, reason=verdict.reason,
-                )
-            print(f"本地模型 {verdict.by} 判断 {res.clip_name}："
-                  f"{'喝水' if verdict.drinking else '没喝'}（概率 {verdict.confidence:.1%}）")
+            verdict = result.get("authority")
+            if verdict is not None:
+                print(f"裁判 {verdict.by} 判断 {res.clip_name}："
+                      f"{'喝水' if verdict.drinking else '没喝'}")
         threading.Thread(target=_run, daemon=True).start()
 
     # 采集线程：全速读相机 → 更新预览（网页流畅）；按 fps 节奏喂回放缓冲，
