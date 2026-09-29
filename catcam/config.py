@@ -28,7 +28,7 @@ class Config:
     preroll_seconds: float = 3.0          # 触发前补录这么久（猫凑近的过程）
     session_end_grace_seconds: float = 3.0  # 猫离开持续这么久才算结束、收尾存盘
     max_session_seconds: float = 15.0      # 单段封顶，防卡死无限录；超过 15s 没有更多信息量
-    yolo_model: str = "yolov8n.pt"
+    yolo_model: str = "yolo11n.pt"  # COCO 预训练直接识别猫；旧配置仍使用原来指定的模型
     cat_confidence: float = 0.4
     data_dir: str = "data"
     # 默认只绑定本机回环：用户远程进 Mac Mini 后用 localhost 访问，画面不出本机。
@@ -51,6 +51,7 @@ class Config:
     cls_base_model: str = "yolov8n-cls.pt"
     train_epochs: int = 15
     train_imgsz: int = 96
+    video_device: str = "auto"  # CUDA / Apple MPS / CPU；MPS 不支持的视频算子自动退回 CPU
 
     # AI 自动标注 / 整段裁判（外部视觉大模型，OpenRouter / OpenAI 兼容）：录一段自动判「喝/没喝」，
     # 它是「发邮件 + 记次数」的唯一权威，并把判定写进训练数据。
@@ -69,6 +70,7 @@ class Config:
     # 用「画面变化」识别行为。record_at_night=False 则天黑直接不记录。
     night_brightness_threshold: float = 50.0
     record_at_night: bool = True
+    minimum_visibility_brightness: float = 20.0  # 原始水碗区域；低于此值记为无法判断
 
     # 检测节奏：每隔这么久跑一次 YOLO 识别（与采集/预览解耦，预览始终流畅）。
     detect_interval_seconds: float = 0.2

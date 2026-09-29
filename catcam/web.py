@@ -650,6 +650,7 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px}
         <button class="live-zoom" aria-label="放大" onclick="event.stopPropagation();openLive()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg></button>
       </div>
+      <p id="visibilityStatus" class="lab-note" role="status" style="margin-top:12px">正在检查水碗区域光照…</p>
     </div></div>
     <div class="card sp3 hoverable an" style="--i:3"><div class="card-h">饮水机 <span class="note" id="dmNote"></span></div>
       <div class="card-b"><div id="dmBody" class="dmini" onclick="go('disp')"></div></div></div>
@@ -705,7 +706,7 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px}
       <button onclick="setLab('models',this)">模型版本</button></div></div>
 
   <div class="lab-pane on an" id="lab-label" style="--i:1">
-    <p class="lab-note">默认只列模型没有结果或把握不足的片段。切到「全部」可抽查模型结果；人工改判会覆盖机器标签，并作为下一轮训练的纠错数据。</p>
+    <p class="lab-note">优先复核无结果、不确定、AI 与本地意见不同的片段，并抽查约 10% 的高置信结果。只有人工确认进入视频训练；部分样本固定留作验证，不参与拟合。</p>
     <div class="toolbar" id="labelFilters">
       <button class="fchip on" data-f="review" onclick="setLabelFilter('review',this)">待复核</button>
       <button class="fchip" data-f="all" onclick="setLabelFilter('all',this)">全部</button>
@@ -718,17 +719,17 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px}
 
   <div class="lab-pane" id="lab-train">
     <div class="krow">
-      <div class="kbox"><div class="k">未人工标注</div><div class="v"><span id="dsUn">–</span><small>段</small></div></div>
-      <div class="kbox"><div class="k">已标注 · 未训练</div><div class="v"><span id="dsNew">–</span><small>段</small></div></div>
-      <div class="kbox"><div class="k">已标注 · 已训练</div><div class="v"><span id="dsTr">–</span><small>段</small></div></div>
-      <div class="kbox"><div class="k">标注 喝水 / 没喝（每类需 ≥4）</div><div class="v" id="dsBal">–</div></div>
+      <div class="kbox"><div class="k">尚无标签的录像</div><div class="v"><span id="dsUn">–</span><small>段</small></div></div>
+      <div class="kbox"><div class="k">人工确认</div><div class="v"><span id="dsNew">–</span><small>段</small></div></div>
+      <div class="kbox"><div class="k">机器标签 · 待人工确认</div><div class="v"><span id="dsTr">–</span><small>段</small></div></div>
+      <div class="kbox"><div class="k">人工 喝水 / 没喝（每类需 ≥4）</div><div class="v" id="dsBal">–</div></div>
     </div>
     <div class="card"><div class="card-b">
       <p class="lab-note">训练看动作的本地视频模型（s3d 冻结特征 + 分类头）。重点查看喝水召回；训练完成后不会自动生效，请到「模型版本」启用。</p>
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
         <button id="trainVideoBtn" class="btn" onclick="trainVideo()">训练视频模型</button>
         <label style="font-size:13px;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px">
-          <input type="checkbox" id="trainVideoRebuild" style="accent-color:var(--aqua)"> 从头重建（忽略特征缓存）</label>
+          <input type="checkbox" id="trainVideoRebuild" style="accent-color:var(--aqua)"> 修复缓存：重新处理全部录像（通常无需勾选）</label>
       </div>
       <div id="trainVideoProg" style="display:none;margin-top:16px"></div>
       <div class="t-status" id="trainVideoStatus"></div>
@@ -848,7 +849,7 @@ async function loadStats(){
     const s=await (await fetch('/api/stats/today')).json();
     countUp($('#sideCount'),s.count); countUp($('#heroCount'),s.count);
     const last=s.times.length?s.times[s.times.length-1]:null;
-    $('#heroLast').innerHTML=last?`<i></i>最近一次 ${esc(last.slice(0,5))}`:'<i></i>今天还没喝水';
+    $('#heroLast').innerHTML=last?`<i></i>最近一次 ${esc(last.slice(0,5))}`:'<i></i>今日尚无确认记录';
     $('#heroLast').className='tag '+(last?'ok':'mute');
     renderTimeline(s.times);
     const w=await (await fetch('/api/stats/range?days=7')).json();
@@ -1248,7 +1249,7 @@ async function renderTrend(){
   const avg=days?total/days:0,today=days?vals[vals.length-1]:0;
   const hero=$('#trendHero');
   let st,cls;
-  if(today===0){st='今天还没喝水 🐾';cls='none';}
+  if(today===0){st='今日尚无确认记录 🐾';cls='none';}
   else if(avg>0&&today>=avg*1.15){st='喝得挺积极 🐱';cls='good';}
   else if(avg>0&&today<=avg*0.6){st='今天偏少，多留意 💧';cls='low';}
   else{st='喝水正常 👍';cls='ok';}
@@ -1295,18 +1296,23 @@ function modelDetail(n){
   };
   return null;
 }
-function needsReview(n){
+function reviewReason(n){
   const m=(clipsData.meta||{})[n];
-  if(m&&m.source==='human')return false;
+  if(m&&m.source==='human')return '';
   const p=modelDetail(n);
-  // 旧的影子预测没有保存概率，但已有明确结论；留在「全部」供抽查，不重复塞满复核队列。
-  return !p||p.confidence!=null&&p.confidence>=REVIEW_LOW&&p.confidence<=REVIEW_HIGH;
+  if(!p)return '模型未判断';
+  if(m&&m.source==='ai'&&!!m.is_drinking!==!!p.drinking)return 'AI 与本地模型意见不同';
+  if(p.confidence!=null&&p.confidence>=REVIEW_LOW&&p.confidence<=REVIEW_HIGH)return '模型不确定';
+  // Stable 10% audit catches confidently wrong predictions, including negatives.
+  let h=2166136261;for(const c of n)h=Math.imul(h^c.charCodeAt(0),16777619);
+  return (h>>>0)%10===0?'高置信结果抽查':'';
 }
+function needsReview(n){return !!reviewReason(n);}
 function modelTag(n){
   const p=modelDetail(n);
   if(!p)return `<span class="tag mute"><i></i>模型未判断</span>`;
   const pct=p.confidence==null?'':` ${Math.round(p.confidence*100)}%`;
-  const uncertain=needsReview(n)?' · 待复核':'';
+  const uncertain=needsReview(n)?' · '+reviewReason(n):'';
   return `<span class="mpred ${p.drinking?'y':'n'}" title="${esc(p.by||'模型')}">模型：${p.drinking?'喝水':'没喝'}${pct}${uncertain}</span>`;
 }
 async function loadLabelClips(){
@@ -1382,6 +1388,20 @@ async function fb(clip,is){
 /* ---------- 模型训练 / 版本 ---------- */
 function fmtAcc(a){return (typeof a==='number')?(a*100).toFixed(1)+'%':'—';}
 function fmtPct(a){return (typeof a==='number')?(a*100).toFixed(0)+'%':'—';}
+function trainingEvidence(e){
+  if(!e)return '';
+  const c=e.confusion,p=e.performance,cmp=e.comparison;
+  let html=c?`<p>验证结果：漏掉 <b>${c.fn}</b> 段喝水，误报 <b>${c.fp}</b> 段；正确识别 ${c.tp+c.tn} 段。</p>`:'';
+  if(cmp&&cmp.status==='compared'&&cmp.misses_reduced!=null){
+    const delta=(n,label)=>n>0?`${label}减少 ${n} 段`:n<0?`${label}增加 ${-n} 段`:`${label}不变`;
+    html+=`<p>同一批视频对比 ${esc(cmp.version)}：${delta(cmp.misses_reduced,'漏判')}，${delta(cmp.false_alarms_reduced,'误报')}。</p>`;
+  }
+  if(p)html+=`<p>复用 ${p.cache_hits||0} 段，新增处理 ${p.extracted||0} 段，跳过 ${p.skipped||0} 段。耗时：视频处理 ${p.feature_seconds||0}s / 拟合 ${p.fit_seconds||0}s / 评估 ${p.evaluation_seconds||0}s。</p>`;
+  const labels={fixed:'本次纠正',regressed:'本次退步',missed:'漏掉喝水',false_alarm:'误报喝水'};
+  if(e.validation_examples&&e.validation_examples.length)html+='<details><summary>查看需要关注的视频（最多 12 段）</summary>'+e.validation_examples.map(x=>
+    `<p>${labels[x.outcome]||'待检查'} · 人工：${x.label?'喝水':'没喝'} · <a href="/clips/${encodeURIComponent(x.clip)}" target="_blank" rel="noopener">${esc(x.clip)}</a></p>`).join('')+'<small>录像已清理时，链接可能不可用；评估仍可使用保留的特征。</small></details>';
+  return html;
+}
 function fmtTime(ts){if(!ts)return '';const d=new Date(ts*1000);
   const p=n=>String(n).padStart(2,'0');return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;}
 async function pollTrain(){
@@ -1392,9 +1412,9 @@ async function pollTrain(){
     const response=await fetch('/api/train/status',{cache:'no-store'});
     if(!response.ok)throw new Error(`HTTP ${response.status}`);
     const s=await response.json();
-    const ls=s.label_states||{labeled:0,drinking:0,not_drinking:0,untrained:0,trained:0};
+    const ls=s.training_labels||{human:0,machine:0,drinking:0,not_drinking:0};
     $('#dsUn').textContent=(s.unlabeled??'–');
-    $('#dsNew').textContent=ls.untrained; $('#dsTr').textContent=ls.trained;
+    $('#dsNew').textContent=ls.human; $('#dsTr').textContent=ls.machine;
     $('#dsBal').textContent=`${ls.drinking} / ${ls.not_drinking}`;
     renderActive(s); renderModels(s);
   }catch(e){
@@ -1419,13 +1439,15 @@ function renderTrainProg(s){
   const phase=s.phase,done=s.done||0,total=s.total||0,prog=s.progress||0;
   const lab=phase==='extracting'?`抽取特征 ${done}/${total} 段`
     :phase==='training'?'训练分类器…'
-    :'加载 s3d 模型…（首次需下载约 30MB，请稍候）';
+    :phase==='evaluating'?'对比验证结果…'
+    :'检查缓存、准备视频特征…（首次缺少权重时需要下载）';
   const det=phase==='extracting';
   const pct=Math.round(prog*100);
   p.style.display='block';
   p.innerHTML=`<div class="pbar-track"><div class="pbar-fill ${det?'det':'indet'}" `+
     `style="${det?'width:'+pct+'%':''}"></div></div>`+
-    `<div class="pbar-lab"><span>${lab}</span><span>${det?pct+'%':''}</span></div>`;
+    `<div class="pbar-lab"><span>${lab} · 已用 ${s.elapsed_seconds||0}s</span><span>${det?pct+'%':''}</span></div>`+
+    `<div class="amini">缓存复用 ${(s.performance||{}).cache_hits||0} 段 · 新处理 ${(s.performance||{}).extracted||0} 段</div>`;
 }
 async function pollTrainVideo(){
   try{
@@ -1444,8 +1466,14 @@ async function pollTrainVideo(){
       if(s.state==='done'&&r){
         st.innerHTML=`完成 ${r.version} · <b>喝水召回 ${fmtPct(r.drinking_recall)}</b> `+
           `精确 ${fmtPct(r.drinking_precision)} <span style="color:var(--faint)">`+
-          `(top1 ${fmtPct(r.top1)}，全猜没喝基线 ${fmtPct(r.naive_baseline)}；`+
+          `(top1 ${fmtPct(r.top1)}，多数类基线 ${fmtPct(r.naive_baseline)}；`+
           `样本 👍${r.counts.drinking}/👎${r.counts.not_drinking})</span>`;
+        if(r.release)st.innerHTML+=`<br>${r.release.eligible?'达到过滤模式门槛；仍建议先影子观察':esc(r.release.reasons.join('；'))}`;
+        if(r.reused)st.innerHTML+='<br>数据和参数未变化，复用已有版本。';
+        if(r.comparison&&r.comparison.note)st.innerHTML+=`<br>${esc(r.comparison.note)}`;
+        st.innerHTML+=trainingEvidence(r);
+        st.innerHTML+=s.active===r.version?'<p>此版本已用于后续录像；历史预测不会自动改写。</p>':
+          `<p>此版本尚未用于后续录像。<button class="mbtn" onclick="activate('${esc(r.version)}','shadow')">启用影子观察</button></p>`;
       }else{st.textContent=s.detail||'';}
       if(s.models)renderModels(s);
     }
@@ -1463,7 +1491,7 @@ function renderActive(s){
     return;
   }
   const hr=s.hitrate;
-  const hrTxt=hr&&hr.total?`实战命中 <b>${hr.correct}/${hr.total}</b>（${fmtAcc(hr.rate)}）`
+  const hrTxt=hr&&hr.total?`人工复核 <b>${hr.correct}/${hr.total}</b> · 漏判 ${hr.fn||0} · 误报 ${hr.fp||0}`
     :'实战命中 <b>—</b>（录到新喝水并标注后累计）';
   box.innerHTML=`<div style="display:flex;align-items:center;gap:13px;flex-wrap:wrap">
     <span class="tag ok" style="font-size:13px;padding:7px 14px"><i></i>${m.id} 生效中</span>
@@ -1472,7 +1500,7 @@ function renderActive(s){
       <button class="${mode==='shadow'?'on':''}" onclick="activate('${m.id}','shadow')">测试模式</button>
       <button class="${mode==='gate'?'on':''}" onclick="activate('${m.id}','gate')">过滤模式</button></div>
     <p class="amini">${mode==='gate'
-      ?'<b>过滤模式</b>：模型判「没喝」就不录——只在它够准时用，否则会漏录真喝水。'
+      ?(m.base==='s3d+head'?'<b>过滤模式</b>：视频模型的判断用于饮水统计；候选录像继续保留供复核。':'<b>过滤模式</b>：单帧模型可能阻止候选录制，请留意漏录。')
       :'<b>测试模式</b>：只预测打分、<b>不拦截录制</b>，简单模型兜底全录；在标注工作台看模型判得准不准。'}</p>`;
 }
 function renderModels(s){
@@ -1483,8 +1511,12 @@ function renderModels(s){
     <button class="mbtn ${!s.active?'cur':'off'}" ${!s.active?'':"onclick=\\"activate(null)\\""}>${!s.active?'生效中':'停用模型'}</button></div>`;
   if(!models.length){html+=`<div class="empty">还没有训练过的模型。去「模型训练」标注后训一个。</div>`;}
   html+=models.map(m=>{const cur=m.id===s.active,ic=m.image_counts||{},lc=m.label_counts||{};
+    const e=m.evaluation,release=e&&e.release;
+    const evidence=e?`人工验证 · 召回 ${fmtPct(e.drinking_recall)} · 精确 ${fmtPct(e.drinking_precision)} · 平衡准确率 ${fmtPct(e.balanced_accuracy)}<br>${release&&release.eligible?'达到过滤门槛':esc((release&&release.reasons||[]).join('；'))}`:'旧版：缺少独立人工验证记录';
+    const comparison=e&&e.comparison;
+    const comparisonText=comparison&&comparison.status==='compared'?`<br>同场对比 ${esc(comparison.version)}：旧版召回 ${fmtPct(comparison.metrics.drinking_recall)} · 精确 ${fmtPct(comparison.metrics.drinking_precision)}`:comparison&&comparison.note?`<br>${esc(comparison.note)}`:'';
     return `<div class="mrow ${cur?'on':''}"><div><div class="mv">${m.id} <span class="macc">${fmtAcc(m.top1)}</span></div>
-      <div class="mmeta">${fmtTime(m.created_ts)} · 抽帧 👍${ic.drinking||0}/👎${ic.not_drinking||0} · 标注 ${lc.labeled||0} 段</div></div>
+      <div class="mmeta">${fmtTime(m.created_ts)} · 样本 👍${ic.drinking||0}/👎${ic.not_drinking||0}<br>${evidence}${comparisonText}${trainingEvidence(e)}</div></div>
       <div class="grow"></div>
       <button class="mbtn ${cur?'cur':''}" ${cur?'':`onclick="activate('${m.id}')"`}>${cur?'生效中':'设为生效'}</button></div>`;
   }).join('');
@@ -1492,11 +1524,24 @@ function renderModels(s){
 }
 async function activate(id,mode){
   $$('.mbtn,#activeBox .seg-ctl button').forEach(b=>b.disabled=true);
-  try{const r=await (await fetch('/api/model/activate',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id,mode:mode||'shadow'})})).json();
+  try{const response=await fetch('/api/model/activate',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id,mode:mode||'shadow'})});
+    const r=await response.json();
+    if(!response.ok){toast(r.detail||'操作失败','err');return;}
     if(r&&r.note)toast(r.note,'info');else toast(id?`${id} 已生效`:'已停用模型');}
   catch(e){toast('操作失败','err');}
-  pollTrain();
+  finally{pollTrain();pollTrainVideo();}
+}
+
+async function pollVisibility(){
+  const el=$('#visibilityStatus');
+  try{
+    const response=await fetch('/api/visibility/status');
+    if(!response.ok)throw new Error('unavailable');
+    const state=await response.json();
+    el.textContent=state.reason+(state.can_judge?'':'。此时的零记录不代表猫没有喝水。');
+    el.style.color=state.can_judge?'var(--muted)':'var(--coral)';
+  }catch(e){el.textContent='暂时无法获取光照状态；请检查实时画面。';}
 }
 
 /* ---------- 启动 ---------- */
@@ -1504,6 +1549,7 @@ bindCardFx($('#recGrid')); bindCardFx($('#labelClips'));
 show((location.hash||'#/home').replace('#/','').replace('#',''));
 loadStats(); setInterval(loadStats,5000);
 loadDispenser(); setInterval(loadDispenser,15000);
+pollVisibility(); setInterval(pollVisibility,5000);
 </script></body></html>"""
 
 
@@ -1527,6 +1573,7 @@ def create_app(
     audio_status_provider=None,
     dispenser=None,
     dispenser_low_water_pct: float = 0.2,
+    visibility_status_provider=None,
 ) -> FastAPI:
     app = FastAPI()
     clips_dir = Path(clips_dir)
@@ -1546,6 +1593,12 @@ def create_app(
         if audio_status_provider is None:
             return {"enabled": False, "available": False}
         return {"enabled": True, **audio_status_provider()}
+
+    @app.get("/api/visibility/status")
+    def visibility_status():
+        if visibility_status_provider is None:
+            return {"status": "unknown", "can_judge": False, "reason": "此入口未接入实时光照检测"}
+        return visibility_status_provider()
 
     @app.get("/api/stats/trend")
     def stats_trend(days: int = 7):
@@ -1678,6 +1731,7 @@ def create_app(
         if trainer is None:
             return {"state": "disabled", "detail": "本入口未启用训练", "models": [], "active": None}
         s = trainer.status()
+        s["training_labels"] = feedback.training_summary()
         s["unlabeled"] = _unlabeled_count()  # 待标注（当前还在的视频里没标的）
         if registry is not None:
             s["active_mode"] = registry.active_mode()
@@ -1714,6 +1768,12 @@ def create_app(
             if entry is None:
                 raise HTTPException(status_code=404, detail="没有这个版本")
             if entry and entry.get("base") == "s3d+head":
+                if mode == "gate":
+                    from catcam.models import check_video_release
+                    try:
+                        check_video_release(entry)
+                    except ValueError as e:
+                        raise HTTPException(status_code=400, detail=str(e))
                 if video_model_switch is None:
                     raise HTTPException(status_code=400, detail="当前进程未接入本地视频裁判")
                 try:

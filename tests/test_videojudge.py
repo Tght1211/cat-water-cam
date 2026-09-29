@@ -26,6 +26,26 @@ def test_read_clip_frames_short_clip_pads(tmp_path):
     clip = tmp_path / "b.mp4"; _make_clip(clip, n=5)
     frames = read_clip_frames(clip, n=16)
     assert len(frames) == 16  # 帧不够时重复补齐到 n
+    assert len(read_clip_frames(clip, n=16, pad=False)) == 5
+
+
+def test_bounded_sampling_preserves_old_model_inputs(tmp_path):
+    path = tmp_path / "moving.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (32, 24))
+    for i in range(150):
+        writer.write(np.full((24, 32, 3), i, np.uint8))
+    writer.release()
+    capture = cv2.VideoCapture(str(path))
+    old = []
+    while True:
+        ok, f = capture.read()
+        if not ok: break
+        old.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+    capture.release()
+    expected = old[::max(1, len(old)//16)][:16]
+    actual = read_clip_frames(path)
+    assert len(actual) == 16
+    assert all(np.array_equal(a, b) for a, b in zip(actual, expected))
 
 
 from catcam.videojudge import DrinkingHead, FEATURE_DIM

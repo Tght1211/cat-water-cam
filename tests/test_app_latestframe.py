@@ -33,3 +33,14 @@ def test_video_judge_runtime_hot_switches_atomically(tmp_path):
     assert judge.version == "v2" and mode == "gate"
     runtime.clear()
     assert runtime.snapshot() == (None, "shadow")
+
+
+def test_latest_frame_visibility_detects_lost_camera():
+    import time
+    lf = LatestFrame()
+    assert not lf.visibility()["can_judge"]
+    lf.set(time.time(), np.zeros((4, 4, 3), np.uint8), False,
+           {"status": "ok", "can_judge": True, "reason": "光照可用"})
+    assert lf.visibility()["can_judge"]
+    lf.set(time.time() - 10, np.zeros((4, 4, 3), np.uint8), False)
+    assert not lf.visibility()["can_judge"]

@@ -68,7 +68,7 @@ class ModelRegistry:
             json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    def add(self, *, path, top1, image_counts, label_counts, base, epochs, imgsz, created_ts) -> dict:
+    def add(self, *, path, top1, image_counts, label_counts, base, epochs, imgsz, created_ts, evaluation=None) -> dict:
         with self._lock:
             seq = self._data["next_seq"]
             self._data["next_seq"] = seq + 1
@@ -83,6 +83,7 @@ class ModelRegistry:
                 "base": base,
                 "epochs": epochs,
                 "imgsz": imgsz,
+                "evaluation": evaluation,
             }
             self._data["models"].insert(0, entry)  # 最新的排最前
             self._save()
@@ -111,6 +112,9 @@ class ModelRegistry:
         with self._lock:
             if model_id is not None and not any(m["id"] == model_id for m in self._data["models"]):
                 raise KeyError(model_id)
+            entry = next((m for m in self._data["models"] if m["id"] == model_id), None)
+            if mode == "gate" and entry and entry.get("base") == "s3d+head":
+                check_video_release(entry)
             self._data["active"] = model_id
             self._data["active_mode"] = mode if mode in ("shadow", "gate") else "shadow"
             self._save()
@@ -122,3 +126,10 @@ class ModelRegistry:
                 if m["id"] == mid:
                     return m["path"]
             return None
+
+
+def check_video_release(entry):
+    release = (entry.get("evaluation") or {}).get("release") or {}
+    if not release.get("eligible"):
+        reasons = release.get("reasons") or ["此版本没有独立人工验证记录，请重新训练"]
+        raise ValueError("暂不能切换过滤模式：" + "；".join(reasons))

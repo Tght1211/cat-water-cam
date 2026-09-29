@@ -55,6 +55,8 @@ def test_train_video_head_registers_version(tmp_path):
     assert res["top1"] >= 0.8
     entry = registry.get("v1")
     assert entry["base"] == "s3d+head"
+    assert entry["evaluation"]["policy"] == "human-grouped-holdout-v1"
+    assert not entry["evaluation"]["release"]["eligible"]
     head = DrinkingHead.load(entry["path"])
     assert head.predict(np.array([2.0] + [0.0] * 7, np.float32))[0] in (True, False)
 
@@ -65,8 +67,10 @@ def test_gather_excludes_source_local(tmp_path):
     store = FeedbackStore(tmp_path / "db.sqlite", training)
     _clip(clips / "ai.mp4", 200); store.label_clip(clips / "ai.mp4", True)         # source=human
     _clip(clips / "loc.mp4", 200); store.record_machine_label("loc.mp4", True, source="local")
+    _clip(clips / "external.mp4", 200); store.label_clip(clips / "external.mp4", True, source="ai")
     X, y, names = gather_dataset(clips, training, store, _FakeExtractor(8), dim=8)
     assert "loc.mp4" not in names and "ai.mp4" in names     # 本地判定不进训练集
+    assert "external.mp4" not in names
 
 
 def test_video_training_manager_runs_and_reports(tmp_path):
@@ -216,3 +220,97 @@ def test_train_video_head_rebuild_ok(tmp_path):
                            extractor=_FakeExtractor(8), dim=8, epochs=100,
                            created_ts=1.0, rebuild=True)
     assert res["version"] == "v1"
+
+
+def test_retraining_same_data_reuses_version_and_rebuild_is_unique(tmp_path, monkeypatch):
+    clips = tmp_path / "clips"; clips.mkdir()
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    for i in range(8):
+        name = f"sample{i}.mp4"
+        _clip(clips / name, 200 if i % 2 else 10)
+        store.label_clip(clips / name, bool(i % 2))
+    registry = ModelRegistry(tmp_path / "models" / "registry.json")
+    args = (clips, training, store, registry, tmp_path / "models")
+    kwargs = dict(extractor=_FakeExtractor(8), dim=8, epochs=20, created_ts=1)
+    first = train_video_head(*args, **kwargs)
+    again = train_video_head(*args, **kwargs)
+    assert again["reused"] and again["version"] == first["version"]
+    assert first["performance"]["extracted"] == 8
+    assert again["performance"]["cache_hits"] == 8
+    assert again["performance"]["extracted"] == 0
+    assert again["performance"]["fit_seconds"] == 0
+    assert len(registry.list()) == 1
+    registry.set_active("v1")
+    rebuilt = train_video_head(*args, **kwargs, rebuild=True)
+    assert rebuilt["comparison"]["status"] == "compared"
+    assert rebuilt["version"] == "v2"
+    assert registry.get("v1")["path"] != registry.get("v2")["path"]
+    assert registry.active_id() == "v1"
+    monkeypatch.setattr(DrinkingHead, "fit", lambda *a, **k: DrinkingHead(np.zeros(8), -100, np.zeros(8), np.ones(8)))
+    regressed = train_video_head(*args, **kwargs, rebuild=True)
+    assert regressed["comparison"]["status"] == "compared"
+    assert any("退步" in reason for reason in regressed["release"]["reasons"])
+    assert regressed["comparison"]["misses_reduced"] < 0
+    assert any(e["outcome"] == "regressed" for e in regressed["validation_examples"])
+    assert registry.active_id() == "v1"
+
+
+def test_wrong_shape_or_nan_cache_is_recomputed(tmp_path):
+    from catcam.video_trainer import extract_and_cache, _save_npy
+    clip = tmp_path / "clip.mp4"
+    _clip(clip, 200)
+    cache = feature_cache_path(tmp_path, clip.name)
+    for invalid in (np.zeros(2), np.full(8, np.nan)):
+        _save_npy(cache, invalid)
+        feat = extract_and_cache(clip, tmp_path, _FakeExtractor(8), dim=8)
+        assert feat.shape == (8,) and np.isfinite(feat).all()
+
+
+def test_correction_removes_old_class_frames(tmp_path):
+    clip = tmp_path / "sample.mp4"
+    _clip(clip, 200)
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    store.label_clip(clip, True)
+    assert list((training / "drinking").glob("sample_*.jpg"))
+    store.label_clip(clip, False)
+    assert not list((training / "drinking").glob("sample_*.jpg"))
+    assert list((training / "not_drinking").glob("sample_*.jpg"))
+
+
+def test_live_prediction_populates_training_cache_and_survives_switch(tmp_path):
+    from catcam.app import VideoJudgeRuntime
+    class CountingExtractor(_FakeExtractor):
+        calls = 0
+        def extract(self, frames):
+            self.calls += 1
+            return super().extract(frames)
+    extractor = CountingExtractor(8)
+    clip = tmp_path / "drink.mp4"
+    _clip(clip, 200)
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    head = tmp_path / "head.npz"
+    DrinkingHead(np.ones(8), 0, np.zeros(8), np.ones(8)).save(head)
+    runtime = VideoJudgeRuntime(extractor, training)
+    runtime.activate({"id": "v1", "path": head}, "shadow")
+    judge, _ = runtime.snapshot()
+    assert judge.judge(clip).drinking
+    store.label_clip(clip, True)
+    X, _, _ = gather_dataset(tmp_path, training, store, extractor, dim=8)
+    assert X.shape == (1, 8) and extractor.calls == 1
+    runtime.activate({"id": "v2", "path": head}, "shadow")
+    runtime.snapshot()[0].judge(clip)
+    assert extractor.calls == 1
+
+
+def test_insufficient_labels_do_not_decode_videos(tmp_path, monkeypatch):
+    import pytest
+    import catcam.video_trainer as module
+    def unexpected(*args, **kwargs):
+        raise AssertionError("不应该开始抽视频")
+    store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    monkeypatch.setattr(module, "gather_dataset", unexpected)
+    with pytest.raises(ValueError, match="尚未开始"):
+        train_video_head(tmp_path, tmp_path / "training", store, None, tmp_path / "models")

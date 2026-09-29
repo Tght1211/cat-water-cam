@@ -58,7 +58,7 @@ def judge_and_notify(judge, emailer, stats, clip_path, start_ts: float, photo, l
 
 
 def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mode: str,
-               emailer, stats, feedback, log=print) -> dict:
+               emailer, stats, feedback, log=print, visibility_check=None) -> dict:
     """会话录完后按模式编排：谁标注 / 谁判邮件计数 / 谁影子预测。返回各动作结果（供测试/日志）。
 
     - gate + 有本地模型：本地当权威，写 source='local' 计数标签，**不调 VLM**（画面不出本机）。
@@ -68,10 +68,15 @@ def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mo
     authority = None
     emailed = False
     shadow_pred = None
+    if visibility_check is not None and not visibility_check(clip_path):
+        log(f"{name}：光线不足或无法解码，保留待复核，不记作没喝水。")
+        return {"authority": None, "emailed": False, "shadow_pred": None,
+                "skipped_reason": "insufficient_visibility"}
 
     if mode == "gate" and local_judge is not None:
         authority = local_judge.judge(clip_path)
         if authority is not None:
+            stats.set_prediction(name, int(authority.drinking), local_judge.version, authority.confidence)
             feedback.record_machine_label(
                 name, authority.drinking, source="local",
                 confidence=authority.confidence, reason=authority.reason,

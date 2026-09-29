@@ -127,7 +127,21 @@ def test_route_gate_local_authority_no_vlm():
     assert r["emailed"] is True                       # 本地权威判喝水 → 发
     assert lab.labeled == []                          # gate 不调 VLM（画面不上传）
     assert fb.machine == [("b.mp4", True, "local")]   # 本地写计数标签
-    assert st.preds == []                             # gate 不另记影子
+    assert st.preds == [("b.mp4", 1, "v5", .9)]        # gate 也留存预测供人工复核
+
+
+def test_unusable_light_never_becomes_a_negative_training_label():
+    em = _FakeEmailer(); st = _FakeStats(); fb = _FakeFeedback()
+    lab = _FakeLabeler({"drinking": True})
+    local = _FakeLocalJudge(True)
+    for mode in ("shadow", "gate"):
+        result = route_clip(clip_path="dark.mp4", start_ts=0, photo="P", ai_labeler=lab,
+                            local_judge=local, mode=mode, emailer=em, stats=st, feedback=fb,
+                            visibility_check=lambda _: False)
+        assert result["authority"] is None
+        assert result["skipped_reason"] == "insufficient_visibility"
+    assert not em.sent and not fb.machine and not st.preds
+    assert not lab.labeled and not local.judged
 
 
 def test_route_no_local_is_phase1():
