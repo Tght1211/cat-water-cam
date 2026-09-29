@@ -83,3 +83,16 @@ def test_model_hitrate_and_predictions(tmp_path):
     assert stats.model_hitrate("v9")["rate"] is None         # 没有该版本预测
     preds = stats.clip_predictions()
     assert preds["a.mp4"] is True and preds["c.mp4"] is False
+
+
+def test_model_hitrate_uses_only_human_labels(tmp_path):
+    from catcam.feedback import FeedbackStore
+    stats = StatsStore(tmp_path / "db.sqlite")
+    FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    for name in ("human.mp4", "ai.mp4", "local.mp4"):
+        stats.record_event(1, name, predicted=0, predicted_by="v1")
+    with sqlite3.connect(stats.db_path) as conn:
+        for name, source, truth in [("human.mp4", "human", 1), ("ai.mp4", "ai", 0), ("local.mp4", "local", 0)]:
+            conn.execute("INSERT INTO labels (clip_name,is_drinking,source) VALUES (?,?,?)", (name, truth, source))
+    result = stats.model_hitrate("v1")
+    assert result["total"] == 1 and result["fn"] == 1 and result["correct"] == 0

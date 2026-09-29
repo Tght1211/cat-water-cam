@@ -8,27 +8,15 @@ import cv2
 
 
 def extract_frames(clip_path: Path, out_dir: Path, max_frames: int) -> list[Path]:
+    from catcam.videojudge import read_clip_frames
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    cap = cv2.VideoCapture(str(clip_path))
-    frames = []
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            frames.append(frame)
-    finally:
-        cap.release()
-    if not frames:
-        return []
-    step = max(1, len(frames) // max_frames)
-    chosen = frames[::step][:max_frames]
+    chosen = read_clip_frames(clip_path, n=max_frames, pad=False)
     stem = Path(clip_path).stem
     written: list[Path] = []
     for i, frame in enumerate(chosen):
         p = out_dir / f"{stem}_{i}.jpg"
-        cv2.imwrite(str(p), frame)
+        cv2.imwrite(str(p), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         written.append(p)
     return written
 

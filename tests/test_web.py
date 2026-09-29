@@ -329,6 +329,16 @@ def test_gate_rejection_does_not_switch_runtime(tmp_path):
     assert switched == [] and registry.active_id() is None
 
 
+def test_visibility_status_reports_unknown_and_injected_light_state(tmp_path):
+    app, stats, recorder, feedback, _, _ = _build_with_registry(tmp_path)
+    unknown = TestClient(app).get("/api/visibility/status").json()
+    assert not unknown["can_judge"] and unknown["status"] == "unknown"
+    state = {"status": "insufficient_light", "can_judge": False, "reason": "光线不足"}
+    app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir,
+                     visibility_status_provider=lambda: state)
+    assert TestClient(app).get("/api/visibility/status").json() == state
+
+
 class _FakeVideoTrainer:
     def __init__(self): self.started = 0; self._state = "idle"; self.last_rebuild = None
     def start(self, rebuild=False): self.started += 1; self.last_rebuild = rebuild; self._state = "running"; return True

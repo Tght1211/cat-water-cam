@@ -89,16 +89,23 @@ class StatsStore:
     def model_hitrate(self, version: str) -> dict:
         """某版本「测试模型」在真实数据上的命中率：它预测过、且该段已人工标注的，预测对了多少。"""
         with self._conn() as conn:
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(labels)")}
+            human_only = " AND (l.source = 'human' OR l.source IS NULL)" if "source" in columns else ""
             rows = conn.execute(
                 "SELECT e.predicted, l.is_drinking FROM events e "
                 "JOIN labels l ON e.clip_name = l.clip_name "
-                "WHERE e.predicted IS NOT NULL AND e.predicted_by = ?",
+                "WHERE e.predicted IS NOT NULL AND e.predicted_by = ?" + human_only,
                 (version,),
             ).fetchall()
         total = len(rows)
         correct = sum(1 for pred, label in rows if int(pred) == int(label))
+        tp = sum(pred == 1 and label == 1 for pred, label in rows)
+        fp = sum(pred == 1 and label == 0 for pred, label in rows)
+        fn = sum(pred == 0 and label == 1 for pred, label in rows)
         return {"total": total, "correct": correct,
-                "rate": (correct / total) if total else None}
+                "rate": (correct / total) if total else None, "fp": fp, "fn": fn,
+                "recall": tp / (tp + fn) if tp + fn else None,
+                "precision": tp / (tp + fp) if tp + fp else None}
 
     def clip_predictions(self) -> dict:
         """{clip_name: 预测bool}，给视频列表显示「模型怎么判」。一段多次取最新。"""

@@ -236,6 +236,10 @@ def test_retraining_same_data_reuses_version_and_rebuild_is_unique(tmp_path, mon
     first = train_video_head(*args, **kwargs)
     again = train_video_head(*args, **kwargs)
     assert again["reused"] and again["version"] == first["version"]
+    assert first["performance"]["extracted"] == 8
+    assert again["performance"]["cache_hits"] == 8
+    assert again["performance"]["extracted"] == 0
+    assert again["performance"]["fit_seconds"] == 0
     assert len(registry.list()) == 1
     registry.set_active("v1")
     rebuilt = train_video_head(*args, **kwargs, rebuild=True)
@@ -247,6 +251,8 @@ def test_retraining_same_data_reuses_version_and_rebuild_is_unique(tmp_path, mon
     regressed = train_video_head(*args, **kwargs, rebuild=True)
     assert regressed["comparison"]["status"] == "compared"
     assert any("退步" in reason for reason in regressed["release"]["reasons"])
+    assert regressed["comparison"]["misses_reduced"] < 0
+    assert any(e["outcome"] == "regressed" for e in regressed["validation_examples"])
     assert registry.active_id() == "v1"
 
 
@@ -271,3 +277,40 @@ def test_correction_removes_old_class_frames(tmp_path):
     store.label_clip(clip, False)
     assert not list((training / "drinking").glob("sample_*.jpg"))
     assert list((training / "not_drinking").glob("sample_*.jpg"))
+
+
+def test_live_prediction_populates_training_cache_and_survives_switch(tmp_path):
+    from catcam.app import VideoJudgeRuntime
+    class CountingExtractor(_FakeExtractor):
+        calls = 0
+        def extract(self, frames):
+            self.calls += 1
+            return super().extract(frames)
+    extractor = CountingExtractor(8)
+    clip = tmp_path / "drink.mp4"
+    _clip(clip, 200)
+    training = tmp_path / "training"
+    store = FeedbackStore(tmp_path / "db.sqlite", training)
+    head = tmp_path / "head.npz"
+    DrinkingHead(np.ones(8), 0, np.zeros(8), np.ones(8)).save(head)
+    runtime = VideoJudgeRuntime(extractor, training)
+    runtime.activate({"id": "v1", "path": head}, "shadow")
+    judge, _ = runtime.snapshot()
+    assert judge.judge(clip).drinking
+    store.label_clip(clip, True)
+    X, _, _ = gather_dataset(tmp_path, training, store, extractor, dim=8)
+    assert X.shape == (1, 8) and extractor.calls == 1
+    runtime.activate({"id": "v2", "path": head}, "shadow")
+    runtime.snapshot()[0].judge(clip)
+    assert extractor.calls == 1
+
+
+def test_insufficient_labels_do_not_decode_videos(tmp_path, monkeypatch):
+    import pytest
+    import catcam.video_trainer as module
+    def unexpected(*args, **kwargs):
+        raise AssertionError("不应该开始抽视频")
+    store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
+    monkeypatch.setattr(module, "gather_dataset", unexpected)
+    with pytest.raises(ValueError, match="尚未开始"):
+        train_video_head(tmp_path, tmp_path / "training", store, None, tmp_path / "models")

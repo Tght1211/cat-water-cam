@@ -1,6 +1,6 @@
 # 喵喵水站 Cat Water Cam
 
-[![Tests](https://img.shields.io/badge/tests-182%20passed-12b886)](#测试)
+[![Tests](https://img.shields.io/badge/tests-203%20passed-12b886)](#测试)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-0aa)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Tght1211/cat-water-cam)](https://github.com/Tght1211/cat-water-cam/releases/latest)
@@ -22,6 +22,7 @@
 - **持续采集与流畅预览**：采集、检测、录制分线程，网页通过 MJPEG 查看实时画面。
 - **完整会话录像**：触发前保留 pre-roll，猫离开后延迟收尾，H.264 MP4 可直接在浏览器播放。
 - **本地动作识别**：S3D 冻结视频特征加轻量分类头，识别“舔水动作”，不是只看一张静态图片。
+- **轻量认猫与特征复用**：新配置使用 YOLO11n 预训练模型识别猫；在线视频判断和训练共用 S3D 特征缓存，仅处理新增片段。支持 Apple MPS / CUDA，无法运行 MPS 视频算子时退回 CPU。
 - **开箱即用的预训练模型**：首次启动自动登记内置分类头，并以 `shadow` 模式运行；已有模型库不会被覆盖。
 - **主动复核、人工纠错**：复核无判断、不确定和 AI/本地意见不同的片段，并稳定抽查约 10% 的高置信结果；视频训练只信任人工确认标签。
 - **一键训练与热切换**：网页训练新版本，点击“设为生效”后立即用于下一段录像，无需重启采集进程。
@@ -88,6 +89,16 @@ python3 -m venv .venv
 
 固定划分保存在 `data/training/holdout.json`（实际位置跟随 training_dir），新增数据或纠错不会让旧训练样本进入验证集。缺少跨时段、跨类别样本时会明确要求补标，而不是输出虚高分数。不要删除该文件来挑选更好看的分数。这是工程准入门槛，不代表已证明跨环境泛化；上线前仍应观察新时段实战数据。详细设计见 [迭代设计](docs/model-iteration.md)。
 
+训练页会拆分视频处理、分类头拟合、评估耗时，显示复用/新增/跳过片段数。结果用“漏掉几段喝水、误报几段”呈现，可点击验证错例；有可比旧版时显示本次减少或增加的错误。训练完成不自动生效，点“启用影子观察”后用于新录像，历史预测不会自动改写。通常不要勾选“修复缓存”，否则会强制重新处理全部录像。
+
+### 无夜视摄像头
+
+没有红外的摄像头在完全黑暗中无法可靠检测喝水，CLAHE 等增亮算法不能恢复没有采集到的信息。建议固定水碗区域，并使用柔和、持续的小夜灯照清猫嘴与水面；仅有红外灯而摄像头不支持相应红外成像时不一定有效。
+
+系统现在检查原始水碗区域亮度：太暗时显示“无法判断”，暂停新候选触发；收尾录像也会检查可见性，不写入“没喝水”机器标签、不发邮件。录像与训练保留原始帧，避免增强噪声污染证据。光照恢复后自动恢复检测。`record_at_night=true` 仍受可见性检查约束，页面零记录表示尚无确认记录，不能证明猫没有喝水。亮度门槛是启发式判断，不能证明画面没有模糊或遮挡。
+
+模型选型与性能实测见 [轻量模型、训练速度与夜间方案](docs/training-performance-and-night.md)。
+
 也可以使用命令行：
 
 ```bash
@@ -139,6 +150,9 @@ class MyClipJudge:
 | `session_end_grace_seconds` | 猫离开多久后结束会话 |
 | `max_session_seconds` | 单段视频最长时长 |
 | `record_at_night` | 弱光环境下是否继续记录 |
+| `minimum_visibility_brightness` | 原始水碗区域最低亮度，默认 20（0–255）；不足时无法判断 |
+| `video_device` | 默认 `auto`：CUDA / Apple MPS / CPU；可显式指定 `cpu` |
+| `yolo_model` | 新配置默认 `yolo11n.pt`，旧配置中指定的模型保持有效 |
 | `record_audio` | 是否采集并合入麦克风音轨，默认关闭 |
 | `audio_input_format` / `audio_device` | ffmpeg 音频输入格式与设备 |
 | `web_host` / `web_port` | 默认 `127.0.0.1:8000`；`0.0.0.0` 会暴露到局域网 |

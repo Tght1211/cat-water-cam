@@ -27,7 +27,7 @@ from catcam.session import DrinkSession
 from catcam.simple import MotionGrayDetector
 from catcam.stats import StatsStore
 from catcam.trainer import TrainingManager
-from catcam.video_trainer import VideoTrainingManager
+from catcam.video_trainer import VideoTrainingManager, extract_and_cache
 from catcam.videojudge import DrinkingHead, LocalVideoClipJudge, S3DFeatureExtractor
 from catcam.vision import CatDetector
 from catcam.web import create_app
@@ -44,12 +44,21 @@ class LatestFrame:
         self._now = None
         self._frame = None
         self._night = False
+        self._visibility = {"status": "unknown", "can_judge": False, "reason": "尚未收到画面"}
 
-    def set(self, now: float, frame, night: bool) -> None:
+    def set(self, now: float, frame, night: bool, visibility=None) -> None:
         with self._lock:
             self._now = now
             self._frame = frame
             self._night = night
+            if visibility is not None:
+                self._visibility = dict(visibility)
+
+    def visibility(self):
+        with self._lock:
+            if self._frame is not None and time.time() - self._now > 5:
+                return {"status": "unknown", "can_judge": False, "reason": "摄像头画面已中断"}
+            return dict(self._visibility)
 
     def get(self):
         """供网页预览：只返回帧拷贝。"""
@@ -95,17 +104,22 @@ def _serve_web(app, host: str, port: int) -> None:
 class VideoJudgeRuntime:
     """可热切换的本地视频裁判；录制线程每段开始判断前取一次快照。"""
 
-    def __init__(self):
+    def __init__(self, extractor=None, training_dir=None):
         self._lock = threading.Lock()
         self._judge = None
         self._mode = "shadow"
+        self.extractor = extractor or S3DFeatureExtractor()
+        self.training_dir = training_dir
 
     def activate(self, entry: dict, mode: str):
         path = Path(entry["path"])
         if not path.exists():
             raise FileNotFoundError(path)
         head = DrinkingHead.load(path)
-        judge = LocalVideoClipJudge(S3DFeatureExtractor(), head, entry["id"])
+        feature_provider = None
+        if self.training_dir is not None:
+            feature_provider = lambda clip: extract_and_cache(clip, self.training_dir, self.extractor, dim=head.dim)
+        judge = LocalVideoClipJudge(self.extractor, head, entry["id"], feature_provider=feature_provider)
         with self._lock:
             self._judge = judge
             self._mode = mode if mode in ("shadow", "gate") else "shadow"
@@ -138,7 +152,8 @@ def main(config_path: str = "config.json") -> None:
     bundled = install_bundled_video_model(registry, cfg.models_dir)
     if bundled is not None:
         print(f"已安装内置预训练视频模型：{bundled['id']}（shadow）")
-    video_judge_runtime = VideoJudgeRuntime()
+    video_extractor = S3DFeatureExtractor(cfg.video_device)
+    video_judge_runtime = VideoJudgeRuntime(video_extractor, cfg.training_dir)
     active_entry = registry.get(registry.active_id()) if registry.active_id() else None
     if active_entry and active_entry.get("base") == "s3d+head":
         try:
@@ -155,6 +170,7 @@ def main(config_path: str = "config.json") -> None:
     # 网页「训练视频模型」按钮用：后台训 s3d+head 小头（与单帧 TrainingManager 并存）。
     video_trainer = VideoTrainingManager(
         cfg.clips_dir, cfg.training_dir, feedback, registry, cfg.models_dir,
+        extractor=video_extractor,
     )
     # 会话录制要把「凑近过程 + dwell 这几秒」一起补进开头，缓冲就开这么长。
     buffer_seconds = (
@@ -207,6 +223,7 @@ def main(config_path: str = "config.json") -> None:
         video_model_switch=video_judge_runtime.activate,
         video_model_clear=video_judge_runtime.clear,
         audio_status_provider=(audio_ring.status if audio_ring is not None else None),
+        visibility_status_provider=latest.visibility,
         dispenser=dispenser, dispenser_low_water_pct=cfg.dispenser_low_water_pct,
     )
     threading.Thread(
@@ -266,6 +283,8 @@ def main(config_path: str = "config.json") -> None:
                 emailer=emailer,
                 stats=stats,
                 feedback=feedback,
+                visibility_check=lambda path: nightvision.clip_is_visible(
+                    path, cfg.bowl_roi, cfg.minimum_visibility_brightness),
             )
             verdict = result.get("authority")
             if verdict is not None:
@@ -284,8 +303,11 @@ def main(config_path: str = "config.json") -> None:
                 continue
             now = time.time()
             night = nightvision.is_dark(raw, cfg.night_brightness_threshold)
-            frame = nightvision.enhance_lowlight(raw) if night else raw
-            latest.set(now, frame, night)
+            # Keep original evidence for recording/training; enhancement is not night vision.
+            frame = raw
+            visibility = nightvision.visibility_status(raw, cfg.bowl_roi, cfg.minimum_visibility_brightness,
+                                                       cfg.night_brightness_threshold)
+            latest.set(now, frame, night, visibility)
             if now - last_buf >= buf_interval:
                 last_buf = now
                 pipeline.observe(now, frame)
@@ -308,7 +330,9 @@ def main(config_path: str = "config.json") -> None:
                 time.sleep(cfg.detect_interval_seconds)
                 continue
             now, frame, night = state
-            blocked = night and not cfg.record_at_night
+            blocked = (night and not cfg.record_at_night) or not latest.visibility()["can_judge"]
+            if night and not blocked:
+                frame = nightvision.enhance_lowlight(frame)
             if session is not None:
                 in_roi = False if blocked else pipeline.cat_in_bowl(frame, night)
                 presence.set(now, in_roi)
