@@ -78,6 +78,11 @@ class FeedbackStore:
                 (clip_path.name, 1 if is_drinking else 0, time.time(), source, confidence, reason),
             )
         sub = "drinking" if is_drinking else "not_drinking"
+        # A correction must remove the previous class's frames, otherwise the
+        # legacy image trainer learns contradictory labels for the same clip.
+        opposite = "not_drinking" if is_drinking else "drinking"
+        for old in (self.training_dir / opposite).glob(f"{clip_path.stem}_*.jpg"):
+            old.unlink()
         extract_frames(clip_path, self.training_dir / sub, max_frames)
 
     def record_machine_label(self, clip_name: str, is_drinking: bool, source: str = "local",
@@ -150,6 +155,19 @@ class FeedbackStore:
             "untrained": untrained,   # 已标注、还没进过训练
             "trained": trained,       # 已标注、已被某次训练用过
         }
+
+    def training_summary(self) -> dict:
+        """Label readiness, independent of the legacy image trainer's trained flag."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT source, is_drinking, COUNT(*) FROM labels GROUP BY source, is_drinking").fetchall()
+        counts = {"drinking": 0, "not_drinking": 0, "human": 0, "machine": 0}
+        for source, drinking, count in rows:
+            if source in (None, "human"):
+                counts["human"] += count
+                counts["drinking" if drinking else "not_drinking"] += count
+            else:
+                counts["machine"] += count
+        return counts
 
     def mark_trained(self, version: str) -> None:
         """一次训练完成后，把当前所有标注标记为「已被该版本训练」。"""

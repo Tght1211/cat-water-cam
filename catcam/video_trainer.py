@@ -1,18 +1,22 @@
 """离线训练本地视频小头：缓存 s3d 特征 + 当前标签 → 训 logistic 头 → 登记 registry 版本。
 
-不改运行中的 app。训练数据来自 VLM/人工已写进 labels 的标注（is_drinking）。
+不改运行中的 app。只使用人工标注；验证集固定留出，AI 标签等待人工确认。
 """
 from __future__ import annotations
 
 import io
+import hashlib
+import json
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
 
 from catcam.videojudge import DrinkingHead, S3DFeatureExtractor, read_clip_frames, FEATURE_DIM
+from catcam.evaluation import holdout_split, classification_metrics, release_assessment, sample_group
 
 MIN_PER_CLASS = 4   # 每类至少这么多段才值得训
 
@@ -42,6 +46,13 @@ def _load_npy(path: Path) -> np.ndarray:
     return np.load(io.BytesIO(Path(path).read_bytes()))
 
 
+def _valid_feature(feat, dim):
+    feat = np.asarray(feat, np.float32)
+    if feat.shape != (dim,) or not np.isfinite(feat).all():
+        raise ValueError("特征维度不匹配或包含非有限数值，请重建特征")
+    return feat
+
+
 def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM, force: bool = False):
     """取一段的特征：命中缓存直接读，否则抽帧→提取→存缓存。抽帧空返回 None。
 
@@ -52,7 +63,7 @@ def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM
     cache = feature_cache_path(training_dir, clip_path.name)
     if not force and cache.exists():
         try:
-            return _load_npy(cache)
+            return _valid_feature(_load_npy(cache), dim)
         except Exception:  # noqa: BLE001 —— 损坏缓存不致命：重抽覆盖
             pass
     frames = read_clip_frames(clip_path)
@@ -60,21 +71,21 @@ def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM
         # mp4 不在了（多半被 max_clips 裁掉）：force 也只能退回缓存
         if cache.exists():
             try:
-                return _load_npy(cache)
+                return _valid_feature(_load_npy(cache), dim)
             except Exception:  # noqa: BLE001
                 return None
         return None
-    feat = np.asarray(extractor.extract(frames), np.float32).reshape(-1)
+    feat = _valid_feature(np.asarray(extractor.extract(frames), np.float32).reshape(-1), dim)
     _save_npy(cache, feat)
     return feat
 
 
 def _labeled_clips(store) -> list[tuple[str, int]]:
-    """从 labels 表取所有 (clip_name, is_drinking)；排除 source='local'（机器自身判定，不当训练真值）。"""
+    """只使用人工确认标签；AI 和本地预测留给复核，不作为训练真值。"""
     import sqlite3
     with sqlite3.connect(store.db_path) as conn:
         rows = conn.execute(
-            "SELECT clip_name, is_drinking FROM labels WHERE source IS NULL OR source != 'local'"
+            "SELECT clip_name, is_drinking FROM labels WHERE source IS NULL OR source = 'human' ORDER BY clip_name"
         ).fetchall()
     return [(name, int(v)) for name, v in rows]
 
@@ -114,7 +125,7 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
                      rebuild: bool = False, progress_cb=None) -> dict:
     """训头并登记版本。数据不够 raise ValueError。返回 {version, top1, counts}。
 
-    无论 rebuild 与否，都在**全部已标注**样本上从头训一个新头（不增量）；rebuild 只额外强制重抽特征。
+    只在人工训练分区上拟合，固定验证分区不参与拟合；rebuild 额外强制重抽特征。
     progress_cb（可选）：依次报 `preparing`（加载/下载 s3d）→ `extracting`（逐段，由 gather_dataset 发）
     → `training`（拟合小头）。回调抛异常会被吞掉。
     """
@@ -135,31 +146,53 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
     if too_few:
         raise ValueError(f"标注样本不够：当前 {counts}，每类需 ≥{MIN_PER_CLASS}。")
     _emit({"phase": "training"})             # 特征齐了，拟合 logistic 小头（很快）
-    # 确定性留出集：固定种子打乱后取头部 val_ratio 当验证
-    rng = np.random.default_rng(seed)
-    idx = rng.permutation(len(y))
-    n_val = max(1, int(len(y) * val_ratio))
-    val_idx, train_idx = idx[:n_val], idx[n_val:]
+    train_idx, val_idx = holdout_split(names, y, Path(training_dir) / "holdout.json", val_ratio, seed)
+    manifest = {"train": [names[i] for i in train_idx], "validation": [names[i] for i in val_idx]}
+    fingerprint = hashlib.sha256(json.dumps(list(zip(names, y.tolist()))).encode() + X.tobytes()).hexdigest()
+    parameters = {"epochs": epochs, "seed": seed, "weight_decay": .01}
+    for existing in registry.list():
+        evidence = existing.get("evaluation") or {}
+        if (not rebuild and evidence.get("dataset_fingerprint") == fingerprint
+                and evidence.get("parameters") == parameters and evidence.get("manifest") == manifest
+                and Path(existing["path"]).exists()):
+            return {"version": existing["id"], "counts": counts, "reused": True,
+                    **{k: evidence[k] for k in ("top1", "drinking_recall", "drinking_precision",
+                        "balanced_accuracy", "f1", "confusion", "val_counts", "naive_baseline", "release", "comparison")}}
     head = DrinkingHead.fit(X[train_idx], y[train_idx], dim=dim, epochs=epochs, seed=seed)
-    yval = y[val_idx]
-    preds = np.array([head.predict(X[i])[0] for i in val_idx], int)
-    top1 = float((preds == yval).mean())
-    # 类别不平衡下 top1 会骗人（全猜「没喝」也能很高）：另报喝水类的召回/精确，和「全猜没喝」基线。
-    n_pos = int((yval == 1).sum()); n_neg = int((yval == 0).sum())
-    tp = int(((preds == 1) & (yval == 1)).sum()); pp = int((preds == 1).sum())
-    drinking_recall = (tp / n_pos) if n_pos else None        # 抓到了几成真喝水
-    drinking_precision = (tp / pp) if pp else None
-    naive_baseline = (max(n_pos, n_neg) / len(yval)) if len(yval) else None  # 全猜多数类的准确率
+    metrics = classification_metrics(head, X[val_idx], y[val_idx])
+    assessment = release_assessment(metrics)
+    comparison = {"status": "no_active_model"}
+    incumbent = registry.get(registry.active_id())
+    if incumbent:
+        previous = (incumbent.get("evaluation") or {}).get("manifest")
+        if previous is None:
+            comparison = {"status": "unknown_training_history", "version": incumbent["id"]}
+        elif {sample_group(n) for n in previous["train"]} & {sample_group(n) for n in manifest["validation"]}:
+            comparison = {"status": "overlapping_training_data", "version": incumbent["id"]}
+        else:
+            try:
+                old = DrinkingHead.load(incumbent["path"])
+                old_metrics = classification_metrics(old, X[val_idx], y[val_idx])
+                comparison = {"status": "compared", "version": incumbent["id"], "metrics": old_metrics}
+                if any(metrics[k] + .02 < old_metrics[k] for k in ("drinking_recall", "drinking_precision", "balanced_accuracy")):
+                    assessment["reasons"].append("与当前模型相比，召回、精确率或平衡准确率退步超过 2 个百分点")
+            except (OSError, ValueError, KeyError):
+                comparison = {"status": "model_unavailable", "version": incumbent["id"]}
+        if comparison["status"] != "compared":
+            # Unknown legacy history is reported, never presented as evidence of improvement.
+            comparison["note"] = "无法无泄漏对比旧版；只能依据候选的独立验证结果判断"
+    assessment["eligible"] = not assessment["reasons"]
+    evaluation = {**metrics, "manifest": manifest, "dataset_fingerprint": fingerprint,
+                  "policy": "human-grouped-holdout-v1", "parameters": parameters,
+                  "comparison": comparison, "release": assessment}
     models_dir = Path(models_dir); models_dir.mkdir(parents=True, exist_ok=True)
-    head_path = models_dir / f"videohead_{int(created_ts)}.npz"
+    head_path = models_dir / f"videohead_{int(created_ts)}_{uuid.uuid4().hex[:8]}.npz"
     head.save(head_path)
-    entry = registry.add(path=head_path, top1=top1, image_counts=counts,
+    entry = registry.add(path=head_path, top1=metrics["top1"], image_counts=counts,
                          label_counts=counts, base="s3d+head", epochs=epochs,
-                         imgsz=224, created_ts=created_ts)
-    return {"version": entry["id"], "top1": top1, "counts": counts,
-            "val_counts": {"drinking": n_pos, "not_drinking": n_neg},
-            "drinking_recall": drinking_recall, "drinking_precision": drinking_precision,
-            "naive_baseline": naive_baseline}
+                         imgsz=224, created_ts=created_ts, evaluation=evaluation)
+    return {"version": entry["id"], "counts": counts, **metrics,
+            "release": assessment, "comparison": comparison}
 
 
 def _pct(x) -> str:
@@ -246,8 +279,12 @@ class VideoTrainingManager:
             )
             detail = (f"完成 {res['version']} · 喝水召回 {_pct(res['drinking_recall'])} "
                       f"精确 {_pct(res['drinking_precision'])}（top1 {_pct(res['top1'])}，"
-                      f"全猜没喝基线 {_pct(res['naive_baseline'])}；样本 👍{res['counts']['drinking']}"
+                      f"多数类基线 {_pct(res['naive_baseline'])}；样本 👍{res['counts']['drinking']}"
                       f"/👎{res['counts']['not_drinking']}）。未自动生效。")
+            if res.get("reused"):
+                detail = "数据和参数未变化，复用已有版本。" + detail
+            if not res["release"]["eligible"]:
+                detail += "仅限影子模式：" + "；".join(res["release"]["reasons"])
             with self._lock:
                 self._state = "done"; self._result = res; self._detail = detail
         except ValueError as e:   # 样本不够等可预期问题

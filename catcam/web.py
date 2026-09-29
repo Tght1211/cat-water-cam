@@ -705,7 +705,7 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px}
       <button onclick="setLab('models',this)">模型版本</button></div></div>
 
   <div class="lab-pane on an" id="lab-label" style="--i:1">
-    <p class="lab-note">默认只列模型没有结果或把握不足的片段。切到「全部」可抽查模型结果；人工改判会覆盖机器标签，并作为下一轮训练的纠错数据。</p>
+    <p class="lab-note">优先复核无结果、不确定、AI 与本地意见不同的片段，并抽查约 10% 的高置信结果。只有人工确认进入视频训练；部分样本固定留作验证，不参与拟合。</p>
     <div class="toolbar" id="labelFilters">
       <button class="fchip on" data-f="review" onclick="setLabelFilter('review',this)">待复核</button>
       <button class="fchip" data-f="all" onclick="setLabelFilter('all',this)">全部</button>
@@ -718,10 +718,10 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px}
 
   <div class="lab-pane" id="lab-train">
     <div class="krow">
-      <div class="kbox"><div class="k">未人工标注</div><div class="v"><span id="dsUn">–</span><small>段</small></div></div>
-      <div class="kbox"><div class="k">已标注 · 未训练</div><div class="v"><span id="dsNew">–</span><small>段</small></div></div>
-      <div class="kbox"><div class="k">已标注 · 已训练</div><div class="v"><span id="dsTr">–</span><small>段</small></div></div>
-      <div class="kbox"><div class="k">标注 喝水 / 没喝（每类需 ≥4）</div><div class="v" id="dsBal">–</div></div>
+      <div class="kbox"><div class="k">尚无标签的录像</div><div class="v"><span id="dsUn">–</span><small>段</small></div></div>
+      <div class="kbox"><div class="k">人工确认</div><div class="v"><span id="dsNew">–</span><small>段</small></div></div>
+      <div class="kbox"><div class="k">机器标签 · 待人工确认</div><div class="v"><span id="dsTr">–</span><small>段</small></div></div>
+      <div class="kbox"><div class="k">人工 喝水 / 没喝（每类需 ≥4）</div><div class="v" id="dsBal">–</div></div>
     </div>
     <div class="card"><div class="card-b">
       <p class="lab-note">训练看动作的本地视频模型（s3d 冻结特征 + 分类头）。重点查看喝水召回；训练完成后不会自动生效，请到「模型版本」启用。</p>
@@ -1295,18 +1295,23 @@ function modelDetail(n){
   };
   return null;
 }
-function needsReview(n){
+function reviewReason(n){
   const m=(clipsData.meta||{})[n];
-  if(m&&m.source==='human')return false;
+  if(m&&m.source==='human')return '';
   const p=modelDetail(n);
-  // 旧的影子预测没有保存概率，但已有明确结论；留在「全部」供抽查，不重复塞满复核队列。
-  return !p||p.confidence!=null&&p.confidence>=REVIEW_LOW&&p.confidence<=REVIEW_HIGH;
+  if(!p)return '模型未判断';
+  if(m&&m.source==='ai'&&!!m.is_drinking!==!!p.drinking)return 'AI 与本地模型意见不同';
+  if(p.confidence!=null&&p.confidence>=REVIEW_LOW&&p.confidence<=REVIEW_HIGH)return '模型不确定';
+  // Stable 10% audit catches confidently wrong predictions, including negatives.
+  let h=2166136261;for(const c of n)h=Math.imul(h^c.charCodeAt(0),16777619);
+  return (h>>>0)%10===0?'高置信结果抽查':'';
 }
+function needsReview(n){return !!reviewReason(n);}
 function modelTag(n){
   const p=modelDetail(n);
   if(!p)return `<span class="tag mute"><i></i>模型未判断</span>`;
   const pct=p.confidence==null?'':` ${Math.round(p.confidence*100)}%`;
-  const uncertain=needsReview(n)?' · 待复核':'';
+  const uncertain=needsReview(n)?' · '+reviewReason(n):'';
   return `<span class="mpred ${p.drinking?'y':'n'}" title="${esc(p.by||'模型')}">模型：${p.drinking?'喝水':'没喝'}${pct}${uncertain}</span>`;
 }
 async function loadLabelClips(){
@@ -1392,9 +1397,9 @@ async function pollTrain(){
     const response=await fetch('/api/train/status',{cache:'no-store'});
     if(!response.ok)throw new Error(`HTTP ${response.status}`);
     const s=await response.json();
-    const ls=s.label_states||{labeled:0,drinking:0,not_drinking:0,untrained:0,trained:0};
+    const ls=s.training_labels||{human:0,machine:0,drinking:0,not_drinking:0};
     $('#dsUn').textContent=(s.unlabeled??'–');
-    $('#dsNew').textContent=ls.untrained; $('#dsTr').textContent=ls.trained;
+    $('#dsNew').textContent=ls.human; $('#dsTr').textContent=ls.machine;
     $('#dsBal').textContent=`${ls.drinking} / ${ls.not_drinking}`;
     renderActive(s); renderModels(s);
   }catch(e){
@@ -1444,8 +1449,11 @@ async function pollTrainVideo(){
       if(s.state==='done'&&r){
         st.innerHTML=`完成 ${r.version} · <b>喝水召回 ${fmtPct(r.drinking_recall)}</b> `+
           `精确 ${fmtPct(r.drinking_precision)} <span style="color:var(--faint)">`+
-          `(top1 ${fmtPct(r.top1)}，全猜没喝基线 ${fmtPct(r.naive_baseline)}；`+
+          `(top1 ${fmtPct(r.top1)}，多数类基线 ${fmtPct(r.naive_baseline)}；`+
           `样本 👍${r.counts.drinking}/👎${r.counts.not_drinking})</span>`;
+        if(r.release)st.innerHTML+=`<br>${r.release.eligible?'达到过滤模式门槛；仍建议先影子观察':esc(r.release.reasons.join('；'))}`;
+        if(r.reused)st.innerHTML+='<br>数据和参数未变化，复用已有版本。';
+        if(r.comparison&&r.comparison.note)st.innerHTML+=`<br>${esc(r.comparison.note)}`;
       }else{st.textContent=s.detail||'';}
       if(s.models)renderModels(s);
     }
@@ -1472,7 +1480,7 @@ function renderActive(s){
       <button class="${mode==='shadow'?'on':''}" onclick="activate('${m.id}','shadow')">测试模式</button>
       <button class="${mode==='gate'?'on':''}" onclick="activate('${m.id}','gate')">过滤模式</button></div>
     <p class="amini">${mode==='gate'
-      ?'<b>过滤模式</b>：模型判「没喝」就不录——只在它够准时用，否则会漏录真喝水。'
+      ?(m.base==='s3d+head'?'<b>过滤模式</b>：视频模型的判断用于饮水统计；候选录像继续保留供复核。':'<b>过滤模式</b>：单帧模型可能阻止候选录制，请留意漏录。')
       :'<b>测试模式</b>：只预测打分、<b>不拦截录制</b>，简单模型兜底全录；在标注工作台看模型判得准不准。'}</p>`;
 }
 function renderModels(s){
@@ -1483,8 +1491,12 @@ function renderModels(s){
     <button class="mbtn ${!s.active?'cur':'off'}" ${!s.active?'':"onclick=\\"activate(null)\\""}>${!s.active?'生效中':'停用模型'}</button></div>`;
   if(!models.length){html+=`<div class="empty">还没有训练过的模型。去「模型训练」标注后训一个。</div>`;}
   html+=models.map(m=>{const cur=m.id===s.active,ic=m.image_counts||{},lc=m.label_counts||{};
+    const e=m.evaluation,release=e&&e.release;
+    const evidence=e?`人工验证 · 召回 ${fmtPct(e.drinking_recall)} · 精确 ${fmtPct(e.drinking_precision)} · 平衡准确率 ${fmtPct(e.balanced_accuracy)}<br>${release&&release.eligible?'达到过滤门槛':esc((release&&release.reasons||[]).join('；'))}`:'旧版：缺少独立人工验证记录';
+    const comparison=e&&e.comparison;
+    const comparisonText=comparison&&comparison.status==='compared'?`<br>同场对比 ${esc(comparison.version)}：旧版召回 ${fmtPct(comparison.metrics.drinking_recall)} · 精确 ${fmtPct(comparison.metrics.drinking_precision)}`:comparison&&comparison.note?`<br>${esc(comparison.note)}`:'';
     return `<div class="mrow ${cur?'on':''}"><div><div class="mv">${m.id} <span class="macc">${fmtAcc(m.top1)}</span></div>
-      <div class="mmeta">${fmtTime(m.created_ts)} · 抽帧 👍${ic.drinking||0}/👎${ic.not_drinking||0} · 标注 ${lc.labeled||0} 段</div></div>
+      <div class="mmeta">${fmtTime(m.created_ts)} · 样本 👍${ic.drinking||0}/👎${ic.not_drinking||0}<br>${evidence}${comparisonText}</div></div>
       <div class="grow"></div>
       <button class="mbtn ${cur?'cur':''}" ${cur?'':`onclick="activate('${m.id}')"`}>${cur?'生效中':'设为生效'}</button></div>`;
   }).join('');
@@ -1492,11 +1504,13 @@ function renderModels(s){
 }
 async function activate(id,mode){
   $$('.mbtn,#activeBox .seg-ctl button').forEach(b=>b.disabled=true);
-  try{const r=await (await fetch('/api/model/activate',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id,mode:mode||'shadow'})})).json();
+  try{const response=await fetch('/api/model/activate',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id,mode:mode||'shadow'})});
+    const r=await response.json();
+    if(!response.ok){toast(r.detail||'操作失败','err');return;}
     if(r&&r.note)toast(r.note,'info');else toast(id?`${id} 已生效`:'已停用模型');}
   catch(e){toast('操作失败','err');}
-  pollTrain();
+  finally{pollTrain();}
 }
 
 /* ---------- 启动 ---------- */
@@ -1678,6 +1692,7 @@ def create_app(
         if trainer is None:
             return {"state": "disabled", "detail": "本入口未启用训练", "models": [], "active": None}
         s = trainer.status()
+        s["training_labels"] = feedback.training_summary()
         s["unlabeled"] = _unlabeled_count()  # 待标注（当前还在的视频里没标的）
         if registry is not None:
             s["active_mode"] = registry.active_mode()
@@ -1714,6 +1729,12 @@ def create_app(
             if entry is None:
                 raise HTTPException(status_code=404, detail="没有这个版本")
             if entry and entry.get("base") == "s3d+head":
+                if mode == "gate":
+                    from catcam.models import check_video_release
+                    try:
+                        check_video_release(entry)
+                    except ValueError as e:
+                        raise HTTPException(status_code=400, detail=str(e))
                 if video_model_switch is None:
                     raise HTTPException(status_code=400, detail="当前进程未接入本地视频裁判")
                 try:

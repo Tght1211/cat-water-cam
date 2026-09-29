@@ -310,10 +310,23 @@ def test_activate_video_model_failure_keeps_registry_unchanged(tmp_path):
     app, _, _, _, registry, _ = _build_with_registry(tmp_path, video_model_switch=fail)
     head_path = tmp_path / "videohead_1.npz"; head_path.write_bytes(b"x")
     registry.add(path=head_path, top1=0.9, image_counts={}, label_counts={},
-                 base="s3d+head", epochs=1, imgsz=224, created_ts=1.0)
+                 base="s3d+head", epochs=1, imgsz=224, created_ts=1.0,
+                 evaluation={"release": {"eligible": True, "reasons": []}})
     r = TestClient(app).post("/api/model/activate", json={"id": "v1", "mode": "gate"})
     assert r.status_code == 500
     assert registry.active_id() is None
+
+
+def test_gate_rejection_does_not_switch_runtime(tmp_path):
+    switched = []
+    app, _, _, _, registry, _ = _build_with_registry(
+        tmp_path, video_model_switch=lambda *args: switched.append(args))
+    registry.add(path="old.npz", top1=.99, image_counts={}, label_counts={},
+                 base="s3d+head", epochs=1, imgsz=224, created_ts=1)
+    r = TestClient(app).post("/api/model/activate", json={"id": "v1", "mode": "gate"})
+    assert r.status_code == 400
+    assert "人工验证" in r.json()["detail"]
+    assert switched == [] and registry.active_id() is None
 
 
 class _FakeVideoTrainer:

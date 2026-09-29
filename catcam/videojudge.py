@@ -56,17 +56,22 @@ class DrinkingHead:
 
     @classmethod
     def fit(cls, X, y, dim: int = FEATURE_DIM, epochs: int = 300, lr: float = 0.05,
-            seed: int = 0) -> "DrinkingHead":
+            seed: int = 0, weight_decay: float = 0.01) -> "DrinkingHead":
         import torch
         torch.manual_seed(seed)
         X = np.asarray(X, np.float32); y = np.asarray(y, np.float32)
-        mean = X.mean(0); std = X.std(0) + 1e-6
+        if X.ndim != 2 or X.shape != (len(y), dim) or not np.isfinite(X).all() or set(y.tolist()) != {0., 1.}:
+            raise ValueError("训练需要有限特征和两个类别的标签")
+        if epochs < 1:
+            raise ValueError("epochs 必须大于 0")
+        mean = X.mean(0); std = X.std(0)
+        std = np.where(std < 1e-6, 1.0, std)
         Xn = (X - mean) / std
         n_pos = max(1.0, float((y == 1).sum())); n_neg = max(1.0, float((y == 0).sum()))
         Xt = torch.from_numpy(Xn); yt = torch.from_numpy(y).reshape(-1, 1)
         lin = torch.nn.Linear(dim, 1)
         loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([n_neg / n_pos]))
-        opt = torch.optim.Adam(lin.parameters(), lr=lr)
+        opt = torch.optim.AdamW(lin.parameters(), lr=lr, weight_decay=weight_decay)
         for _ in range(epochs):
             opt.zero_grad()
             loss_fn(lin(Xt), yt).backward()
@@ -78,7 +83,7 @@ class DrinkingHead:
     def predict_proba(self, feat) -> float:
         feat = np.asarray(feat, np.float32).reshape(-1)
         z = float(np.dot((feat - self._mean) / self._std, self._w) + self._b)
-        return 1.0 / (1.0 + np.exp(-z))
+        return float(1.0 / (1.0 + np.exp(-z))) if z >= 0 else float(np.exp(z) / (1.0 + np.exp(z)))
 
     def predict(self, feat) -> tuple[bool, float]:
         p = self.predict_proba(feat)

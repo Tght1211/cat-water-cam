@@ -6,3 +6,6 @@ numpy>=1.24
 pytest>=8.0
 httpx>=0.27
 openai
+torch>=2.0
+torchvision>=0.15
+matplotlib>=3.7
