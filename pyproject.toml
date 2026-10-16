@@ -7,11 +7,14 @@ name = "catcam"
 version = "0.2.0"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+videomae = ["transformers>=4.40,<5", "safetensors>=0.4"]
+
 [tool.setuptools.packages.find]
 include = ["catcam*"]
 
 [tool.setuptools.package-data]
-catcam = ["assets/*.npz"]
+catcam = ["assets/*.npz", "static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

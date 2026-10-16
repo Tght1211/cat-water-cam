@@ -7,7 +7,9 @@ def test_defaults_have_expected_values():
     c = Config()
     assert c.max_clips == 1000
     assert c.bowl_roi == (0.3, 0.3, 0.7, 0.7)
-    assert c.fps == 10
+    assert c.fps == 30
+    assert c.motion_recording is True
+    assert c.retention_days == 3
     assert c.video_source == ""
     assert c.web_host == "127.0.0.1"
 
@@ -35,16 +37,16 @@ def test_load_config_reads_existing_overrides(tmp_path):
     assert c.max_clips == 5
     assert c.dwell_seconds == 2.0
     # 未指定字段用默认
-    assert c.fps == 10
+    assert c.fps == 30
 
 
 def test_ai_label_defaults(tmp_path):
     cfg = load_config(tmp_path / "config.json")
-    assert cfg.ai_label_enabled is True   # 默认开（仍受 ai_api_key 把关，无 key 不动作）
+    assert cfg.ai_label_enabled is False  # 用户显式开启上传辅助
     assert cfg.ai_base_url == "https://openrouter.ai/api/v1"
     assert cfg.ai_api_key == ""
-    assert cfg.ai_model == "google/gemma-4-31b-it:free"
-    assert cfg.ai_label_frames == 3
+    assert cfg.ai_model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    assert cfg.ai_label_frames == 16
 
 
 def test_ai_label_roundtrip(tmp_path):

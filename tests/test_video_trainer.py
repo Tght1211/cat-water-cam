@@ -216,3 +216,23 @@ def test_train_video_head_rebuild_ok(tmp_path):
                            extractor=_FakeExtractor(8), dim=8, epochs=100,
                            created_ts=1.0, rebuild=True)
     assert res["version"] == "v1"
+
+
+def test_advice_counts_exclude_missing_video_and_include_changed_labels(tmp_path):
+    from catcam.video_trainer import dataset_diagnostics
+    clips=tmp_path/'clips';clips.mkdir()
+    training=tmp_path/'training';store=FeedbackStore(tmp_path/'db',training)
+    for name,drink in [('a.mp4',True),('b.mp4',False),('missing.mp4',True)]:
+        _clip(clips/name,100)
+        store.label_clip(clips/name,drink)
+    store.mark_trained('v2')
+    # 确保训练快照和原文件都缺失的片段不算可用视频。
+    (clips/'missing.mp4').unlink()
+    from catcam.video_trainer import training_clip_path
+    cached=training_clip_path(clips,training,'missing.mp4')
+    if cached.exists():cached.unlink()
+    store.label_clip(clips/'b.mp4',True)
+    d=dataset_diagnostics(clips,training,store)
+    assert d['video_counts']=={'drinking':2,'not_drinking':0}
+    assert d['new_video_counts']=={'drinking':1,'not_drinking':0}
+    assert d['minimum_per_class']==4

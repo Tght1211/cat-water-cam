@@ -15,6 +15,14 @@ def _make(tmp_path, dwell=2.0, grace=2.0, maxlen=60.0, cooldown=10.0):
     return DrinkSession(rec, dwell, grace, maxlen, cooldown), rec
 
 
+def test_weak_frames_during_session_require_visual_review(tmp_path):
+    s,rec=_make(tmp_path);fb=FrameBuffer(5,10);f=_frame()
+    s.update(3,f,True,0,fb)
+    s.update(4,f,True,0,fb,candidate_only=True)
+    result=s.update(7,f,False,None,fb)
+    assert result.candidate_only
+
+
 def test_records_from_dwell_until_leave(tmp_path):
     s, rec = _make(tmp_path)
     fb = FrameBuffer(5.0, 10)

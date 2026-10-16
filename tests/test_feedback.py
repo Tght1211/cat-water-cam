@@ -55,7 +55,8 @@ def test_ai_label_stores_source_meta(tmp_path):
     store = FeedbackStore(tmp_path / "db.sqlite", tmp_path / "training")
     store.label_clip(clip, True, max_frames=3, source="ai", confidence=0.8, reason="舌头接触水面")
     meta = store.label_meta(clip.name)
-    assert meta == {"is_drinking": True, "source": "ai", "confidence": 0.8, "reason": "舌头接触水面"}
+    assert meta == {"is_drinking": True, "action_drinking":True, "outcome":"drinking", "source": "ai", "confidence": 0.8, "reason": "舌头接触水面", "drinking_seconds": None,
+                    "estimated_drinking_seconds":1.0,"effective_drinking_seconds":1.0,"duration_source":"video_80_percent"}
     assert store.label_source(clip.name) == "ai"
     assert list((tmp_path / "training" / "drinking").glob("*.jpg"))
 
@@ -100,3 +101,25 @@ def test_record_machine_label_no_frames_and_respects_human(tmp_path):
     store.record_machine_label(clip.name, False, source="local")  # 机器想改成没喝
     assert store.get_label(clip.name) is True                  # 仍是人工的
     assert store.label_source(clip.name) == "human"
+
+
+def test_dry_lick_is_action_positive_but_no_intake(tmp_path):
+    from catcam.video_trainer import _labeled_clips
+    from catcam.stats import StatsStore
+    clip=_make_clip(tmp_path)
+    stats=StatsStore(tmp_path/'db.sqlite')
+    store=FeedbackStore(tmp_path/'db.sqlite',tmp_path/'training')
+    stats.record_event(100,clip.name,predicted=1,predicted_by='v1')
+    store.label_clip(clip,False,outcome='dry_lick',reason='换水时没舔到水')
+    assert store.get_label(clip.name) is False
+    assert store.label_meta(clip.name)['action_drinking'] is True
+    assert store.label_meta(clip.name)['outcome']=='dry_lick'
+    assert _labeled_clips(store)==[(clip.name,1)]
+    assert stats.count_between(1,200)==0
+    assert stats.model_hitrate('v1')['correct']==1
+    assert list((tmp_path/'training'/'drinking').glob('*.jpg'))
+    assert not list((tmp_path/'training'/'not_drinking').glob('*.jpg'))
+    assert not store.record_machine_label(clip.name,True)
+    store.label_clip(clip,False,outcome='no_action')
+    assert _labeled_clips(store)==[(clip.name,0)]
+    assert not list((tmp_path/'training'/'drinking').glob('*.jpg'))

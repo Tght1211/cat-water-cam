@@ -8,3 +8,8 @@ data/
 config.json
 runs/
 yolov8n-cls.pt
+
+run.log
+run.pid
+.*.part
+.pytest_cache/

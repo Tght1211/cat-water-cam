@@ -52,10 +52,10 @@ from catcam.ai_labeler import AILabeler
 from catcam.feedback import FeedbackStore
 
 
-def _make_clip(path, frames=6):
+def _make_clip(path, frames=6, val=120):
     w = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 5, (16, 16))
     for _ in range(frames):
-        w.write(np.full((16, 16, 3), 120, np.uint8))
+        w.write(np.full((16, 16, 3), val, np.uint8))
     w.release()
 
 
@@ -82,12 +82,12 @@ def _store(tmp_path):
 def test_label_writes_ai_label_and_training_frames(tmp_path):
     clip = tmp_path / "a.mp4"; _make_clip(clip)
     store = _store(tmp_path)
-    client = _FakeClient('{"drinking": true, "confidence": 0.77, "reason": "舔水"}')
+    client = _FakeClient('{"drinking": true, "confidence": 0.87, "reason": "舔水"}')
     lab = AILabeler(store, tmp_path / "training", "m", frames=3, client=client, sleep=lambda s: None)
     out = lab.label(clip)
     assert out["drinking"] is True
     assert store.label_source("a.mp4") == "ai"
-    assert store.label_meta("a.mp4")["confidence"] == 0.77
+    assert store.label_meta("a.mp4")["confidence"] == 0.87
     assert list((tmp_path / "training" / "drinking").glob("*.jpg"))
 
 
@@ -120,7 +120,7 @@ def test_label_rotates_start_model_across_calls(tmp_path):
     lab = AILabeler(store, tmp_path / "training", ["a", "b"], frames=3,
                     client=client, sleep=lambda s: None)
     for i in range(2):
-        c = tmp_path / f"r{i}.mp4"; _make_clip(c); lab.label(c)
+        c = tmp_path / f"r{i}.mp4"; _make_clip(c, val=100+i*40); lab.label(c)
     # 第一次从 a 起、第二次轮换到 b 起 → 分摊各模型额度
     assert client.models_called == ["a", "b"]
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import cv2
 
@@ -48,12 +49,15 @@ def prune_dir(clips_dir: Path, max_clips: int, is_deletable=None) -> None:
 
 
 class ClipRecorder:
-    def __init__(self, clips_dir: Path, max_clips: int, fps: int, is_deletable=None):
+    def __init__(self, clips_dir: Path, max_clips: int, fps: int, is_deletable=None,
+                 retention_days=None, archive_dirs=()):
         self.clips_dir = Path(clips_dir)
         self.max_clips = max_clips
         self.fps = fps
         # 裁剪时哪些段可删（如只删「没喝」）；None=旧行为（删最旧）。
         self.is_deletable = is_deletable
+        self.retention_days = retention_days
+        self.archive_dirs = tuple(Path(p) for p in archive_dirs)
         self.clips_dir.mkdir(parents=True, exist_ok=True)
 
     def save_clip(self, frames: list, timestamp: float) -> Path:
@@ -67,8 +71,22 @@ class ClipRecorder:
                 writer.write(f)
         finally:
             writer.release()
-        prune_dir(self.clips_dir, self.max_clips, self.is_deletable)
+        self.prune()
         return path
+
+    def prune(self, now=None):
+        if self.retention_days is None:
+            prune_dir(self.clips_dir, self.max_clips, self.is_deletable)
+            return
+        cutoff = (time.time() if now is None else now) - self.retention_days * 86400
+        for directory in (self.clips_dir, *self.archive_dirs):
+            for path in directory.glob('clip_*.mp4'):
+                try:
+                    captured = int(path.stem.removeprefix('clip_')) / 1000
+                    if captured < cutoff:
+                        path.unlink(missing_ok=True)
+                except ValueError:
+                    continue
 
     def list_clips(self) -> list[Path]:
         return sorted(self.clips_dir.glob("clip_*.mp4"), reverse=True)

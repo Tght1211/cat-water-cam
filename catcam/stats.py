@@ -45,6 +45,12 @@ class StatsStore:
                 conn.execute("ALTER TABLE events ADD COLUMN predicted_by TEXT")
             if "predicted_confidence" not in ecols:
                 conn.execute("ALTER TABLE events ADD COLUMN predicted_confidence REAL")
+            if 'candidate_only' not in ecols:
+                conn.execute('ALTER TABLE events ADD COLUMN candidate_only INTEGER NOT NULL DEFAULT 0')
+            if 'water_review' not in ecols:
+                conn.execute('ALTER TABLE events ADD COLUMN water_review INTEGER NOT NULL DEFAULT 0')
+            if 'review_candidate' not in ecols:
+                conn.execute('ALTER TABLE events ADD COLUMN review_candidate INTEGER')
             # labels 表由 FeedbackStore 维护（同一个 db）。这里也 IF NOT EXISTS 一下，
             # 保证统计查询的 LEFT JOIN 永远有表可连（无论两个 store 谁先初始化）。
             conn.execute(
@@ -63,13 +69,43 @@ class StatsStore:
         clip_name: str | None = None,
         predicted: int | None = None,
         predicted_by: str | None = None,
+        candidate_only: bool = False,
+        review_candidate: bool = True,
     ) -> int:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO events (ts, clip_name, predicted, predicted_by) VALUES (?, ?, ?, ?)",
-                (timestamp, clip_name, predicted, predicted_by),
+                "INSERT INTO events (ts, clip_name, predicted, predicted_by, candidate_only, review_candidate) VALUES (?, ?, ?, ?, ?, ?)",
+                (timestamp, clip_name, predicted, predicted_by,int(candidate_only),int(review_candidate)),
             )
             return int(cur.lastrowid)
+
+    def review_candidates(self):
+        with self._conn() as conn:
+            return {name: bool(value) for name,value in conn.execute(
+                'SELECT clip_name,MAX(review_candidate) FROM events GROUP BY clip_name')}
+
+    def set_review_candidate(self, name, required):
+        with self._conn() as conn:
+            conn.execute('UPDATE events SET review_candidate=? WHERE clip_name=?', (int(required),name))
+
+    def unclassified_clips(self):
+        with self._conn() as conn:
+            return [row[0] for row in conn.execute(
+                'SELECT DISTINCT clip_name FROM events WHERE review_candidate IS NULL ORDER BY ts DESC')]
+
+    def requires_visual_review(self,clip_name):
+        with self._conn() as conn:
+            row=conn.execute('SELECT MAX(candidate_only) FROM events WHERE clip_name=?',(clip_name,)).fetchone()
+        return bool(row and row[0])
+
+    def set_water_review(self,clip_name,required):
+        with self._conn() as c:
+            c.execute('UPDATE events SET water_review=? WHERE clip_name=?',(int(required),clip_name))
+
+    def requires_water_review(self,clip_name):
+        with self._conn() as c:
+            row=c.execute('SELECT MAX(water_review) FROM events WHERE clip_name=?',(clip_name,)).fetchone()
+        return bool(row and row[0])
 
     def set_prediction(
         self,
@@ -86,15 +122,20 @@ class StatsStore:
                 (int(predicted), predicted_by, confidence, clip_name),
             )
 
-    def model_hitrate(self, version: str) -> dict:
+    def model_hitrate(self, version: str, exclude_names=()) -> dict:
         """某版本「测试模型」在真实数据上的命中率：它预测过、且该段已人工标注的，预测对了多少。"""
         with self._conn() as conn:
+            cols = {r[1] for r in conn.execute('PRAGMA table_info(labels)')}
+            truth_filter = " AND (l.source IS NULL OR l.source IN ('human','ai'))" if 'source' in cols else ''
+            target = "COALESCE(l.action_drinking,l.is_drinking)" if "action_drinking" in cols else "l.is_drinking"
             rows = conn.execute(
-                "SELECT e.predicted, l.is_drinking FROM events e "
+                f"SELECT e.predicted, {target}, e.clip_name FROM events e "
                 "JOIN labels l ON e.clip_name = l.clip_name "
-                "WHERE e.predicted IS NOT NULL AND e.predicted_by = ?",
+                "WHERE e.predicted IS NOT NULL AND e.predicted_by = ?" + truth_filter,
                 (version,),
             ).fetchall()
+        excluded=set(exclude_names)
+        rows=[(pred,label) for pred,label,name in rows if name not in excluded]
         total = len(rows)
         correct = sum(1 for pred, label in rows if int(pred) == int(label))
         return {"total": total, "correct": correct,
@@ -125,17 +166,41 @@ class StatsStore:
             for name, pred, confidence, predicted_by in rows
         }
 
-    def count_between(self, start_ts: float, end_ts: float) -> int:
-        # 「真实喝水」= 被 AI/人工明确标注为「喝水」(is_drinking=1) 的事件。
-        # 口径：只数确认喝水的——未标注 / 标「没喝」/ 无对应 clip 的事件都不计。
+    def clip_metadata(self):
+        """一次读取事件，保留最新预测及任一事件要求复核的语义。"""
+        result = {}
         with self._conn() as conn:
-            cur = conn.execute(
-                "SELECT COUNT(*) FROM events e "
-                "JOIN labels l ON e.clip_name = l.clip_name "
-                "WHERE e.ts >= ? AND e.ts < ? AND l.is_drinking = 1",
-                (start_ts, end_ts),
-            )
-            return int(cur.fetchone()[0])
+            rows = conn.execute(
+                "SELECT clip_name,predicted,predicted_confidence,predicted_by,"
+                "candidate_only,water_review,review_candidate FROM events "
+                "WHERE clip_name IS NOT NULL ORDER BY ts ASC,id ASC"
+            ).fetchall()
+        for name, pred, confidence, version, visual, water, candidate in rows:
+            item = result.setdefault(name, {"candidate_only": False, "water_review": False,
+                                             "review_candidate": False})
+            item['candidate_only'] |= bool(visual)
+            item['water_review'] |= bool(water)
+            item['review_candidate'] |= bool(candidate)
+            if pred is not None:
+                item['prediction'] = {"drinking": bool(pred), "confidence": confidence, "by": version}
+        return result
+
+    def drinking_records(self):
+        """确认喝水记录至少相隔 60 秒，原始事件和人工标注不修改。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT MIN(e.ts),e.clip_name FROM events e JOIN labels l "
+                "ON e.clip_name=l.clip_name WHERE l.is_drinking=1 "
+                "GROUP BY e.clip_name ORDER BY MIN(e.ts),e.clip_name"
+            ).fetchall()
+        records = []
+        for timestamp, name in rows:
+            if not records or timestamp - records[-1]['ts'] >= 60:
+                records.append({'ts': timestamp, 'clip_name': name})
+        return records
+
+    def count_between(self, start_ts: float, end_ts: float) -> int:
+        return len(self.events_between(start_ts, end_ts))
 
     def daily_counts(self, end_dt: datetime, days: int) -> list[tuple[str, int]]:
         """近 days 天（含 end_dt 当天）每天的喝水次数，缺的天补 0，按时间升序。
@@ -152,13 +217,5 @@ class StatsStore:
         return out
 
     def events_between(self, start_ts: float, end_ts: float) -> list[dict]:
-        # 同 count_between：只列被确认「喝水」的事件，让时间点列表与计数一致。
-        with self._conn() as conn:
-            cur = conn.execute(
-                "SELECT e.ts, e.clip_name FROM events e "
-                "JOIN labels l ON e.clip_name = l.clip_name "
-                "WHERE e.ts >= ? AND e.ts < ? AND l.is_drinking = 1 "
-                "ORDER BY e.ts ASC",
-                (start_ts, end_ts),
-            )
-            return [{"ts": row[0], "clip_name": row[1]} for row in cur.fetchall()]
+        # 先按完整历史去重，再按日期/区间筛选，跨午夜口径仍一致。
+        return [e for e in self.drinking_records() if start_ts <= e['ts'] < end_ts]

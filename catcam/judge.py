@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import math
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,17 @@ class Verdict:
     confidence: float | None
     reason: str
     by: str            # 哪个裁判判的：'vlm' / 本地模型版本号等
+    uncertain: bool = False
+
+
+def is_extreme_verdict(verdict):
+    """仅接受与有效喝水得分一致的两端判断，得分不是正确率。"""
+    if verdict is None or verdict.uncertain or verdict.confidence is None:
+        return False
+    score=verdict.confidence
+    if not math.isfinite(score) or not 0<=score<=1:
+        return False
+    return (verdict.drinking and score>=.995) or (not verdict.drinking and score<=.005)
 
 
 class VLMClipJudge:
@@ -36,7 +48,7 @@ class VLMClipJudge:
         except Exception as e:  # noqa: BLE001 —— 裁判失败绝不能崩采集/误发
             self.log(f"AI 裁判失败（{clip_path}）：{e}")
             return None
-        if result is None:
+        if result is None or result.get('drinking') is None:
             return None
         return Verdict(
             drinking=bool(result["drinking"]),
@@ -58,7 +70,7 @@ def judge_and_notify(judge, emailer, stats, clip_path, start_ts: float, photo, l
 
 
 def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mode: str,
-               emailer, stats, feedback, log=print) -> dict:
+               emailer, stats, feedback, log=print, auto_confirm_extremes=False) -> dict:
     """会话录完后按模式编排：谁标注 / 谁判邮件计数 / 谁影子预测。返回各动作结果（供测试/日志）。
 
     - gate + 有本地模型：本地当权威，写 source='local' 计数标签，**不调 VLM**（画面不出本机）。
@@ -68,14 +80,22 @@ def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mo
     authority = None
     emailed = False
     shadow_pred = None
+    water_review = getattr(stats,'requires_water_review',lambda _:False)(name)
 
     if mode == "gate" and local_judge is not None:
         authority = local_judge.judge(clip_path)
         if authority is not None:
-            feedback.record_machine_label(
+            stats.set_prediction(name, int(authority.drinking), local_judge.version, authority.confidence)
+            if authority.uncertain or water_review and authority.drinking:
+                authority = None
+        if authority is not None:
+            written = feedback.record_machine_label(
                 name, authority.drinking, source="local",
                 confidence=authority.confidence, reason=authority.reason,
             )
+            if not written:
+                # 人工/外部标注优先，机器不得据被拒绝的结论发送通知。
+                authority = None
     else:
         if ai_labeler is not None:
             authority = VLMClipJudge(ai_labeler, log).judge(clip_path)
@@ -86,7 +106,13 @@ def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mo
                     name, int(v.drinking), local_judge.version, v.confidence
                 )
                 shadow_pred = v.drinking
+                if authority is None and auto_confirm_extremes and is_extreme_verdict(v) and not (water_review and v.drinking):
+                    if feedback.record_machine_label(name,v.drinking,source='local',confidence=v.confidence,
+                                                     reason='两端高分自动确认；可抽查纠错'):
+                        authority=v
 
+    if water_review and authority is not None and authority.drinking:
+        authority = None
     if authority is not None and authority.drinking and photo is not None:
         emailer.notify_drinking(stats, photo, datetime.fromtimestamp(start_ts))
         emailed = True

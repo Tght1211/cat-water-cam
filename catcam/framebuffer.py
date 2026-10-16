@@ -18,3 +18,7 @@ class FrameBuffer:
     def all_frames(self) -> list:
         with self._lock:
             return [frame for _, frame in self._buf]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._buf.clear()

@@ -3,7 +3,8 @@ from catcam.app import LatestFrame, VideoJudgeRuntime
 from catcam.videojudge import DrinkingHead
 
 
-def test_latest_frame_roundtrip():
+def test_latest_frame_roundtrip(monkeypatch):
+    monkeypatch.setattr("catcam.app.time.time",lambda:123.0)
     lf = LatestFrame()
     assert lf.get() is None
     assert lf.get_state() is None
@@ -21,6 +22,16 @@ def test_latest_frame_roundtrip():
     assert lf.get_state()[1][1, 1, 1] != 77
 
 
+def test_night_preview_does_not_change_detection_frame_or_quality(monkeypatch):
+    monkeypatch.setattr("catcam.app.time.time",lambda:123.0)
+    lf=LatestFrame();frame=np.full((4,4,3),8,dtype=np.uint8)
+    preview=np.full((4,4,3),100,dtype=np.uint8)
+    lf.set(123,frame,True,{'usable':False},preview=preview)
+    assert lf.get().mean()==100
+    assert lf.get_state()[1].mean()==8
+    assert lf.get_quality()['usable'] is False
+
+
 def test_video_judge_runtime_hot_switches_atomically(tmp_path):
     path = tmp_path / "head.npz"
     DrinkingHead(
@@ -33,3 +44,9 @@ def test_video_judge_runtime_hot_switches_atomically(tmp_path):
     assert judge.version == "v2" and mode == "gate"
     runtime.clear()
     assert runtime.snapshot() == (None, "shadow")
+
+
+def test_stale_camera_frame_is_not_returned_as_live(monkeypatch):
+    lf=LatestFrame();lf.set(100,np.zeros((4,4,3),np.uint8),False)
+    monkeypatch.setattr('catcam.app.time.time',lambda:104)
+    assert lf.get() is None

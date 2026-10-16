@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from catcam.recorder import clip_filename, open_writer, prune_dir
+from catcam.recorder import clip_filename, open_writer
 
 
 @dataclass
@@ -22,6 +22,7 @@ class SessionResult:
     photo: object          # 触发时的代表帧（猫在喝水），供邮件用
     audio_start: float = 0.0  # 该段对应的音频窗口起点（回溯了 preroll），供 mux 切片
     audio_end: float = 0.0    # 音频窗口终点（收尾时刻）
+    candidate_only: bool = False
 
 
 class DrinkSession:
@@ -43,14 +44,16 @@ class DrinkSession:
         self._last_present: float = 0.0
         self._cooldown_until: float = 0.0
         self._path = None
+        self._writing_path = None
         self._photo = None
         self._audio_start: float = 0.0
+        self._candidate_only=False
 
     @property
     def recording(self) -> bool:
         return self._writer is not None
 
-    def update(self, now, frame, in_roi, in_roi_since, frame_buffer) -> SessionResult | None:
+    def update(self, now, frame, in_roi, in_roi_since, frame_buffer, candidate_only=False) -> SessionResult | None:
         """采集线程每帧（按 fps 节奏）调用。返回非 None 表示刚收尾了一段会话。"""
         if self._writer is None:
             if now < self._cooldown_until:
@@ -58,10 +61,12 @@ class DrinkSession:
             # 猫已在水碗持续够久 → 开录
             if in_roi and in_roi_since is not None and now - in_roi_since >= self.dwell_seconds:
                 self._begin(now, frame, frame_buffer)
+                self._candidate_only=candidate_only
             return None
 
         # 录制中：写当前帧
         self._writer.write(frame)
+        self._candidate_only |= candidate_only
         if in_roi:
             self._last_present = now
         ended = (
@@ -75,7 +80,8 @@ class DrinkSession:
     def _begin(self, now, frame, frame_buffer) -> None:
         height, width = frame.shape[:2]
         self._path = self.recorder.clips_dir / clip_filename(now)
-        self._writer = open_writer(self._path, self.recorder.fps, (width, height))
+        self._writing_path = self._path.with_name('.' + self._path.stem + '.recording.mp4')
+        self._writer = open_writer(self._writing_path, self.recorder.fps, (width, height))
         # pre-roll：把回放缓冲（含凑近过程 + dwell 这几秒）先写进去，避免漏掉开头。
         preroll_frames = frame_buffer.all_frames()
         for f in preroll_frames:
@@ -89,10 +95,12 @@ class DrinkSession:
     def _finish(self, now) -> SessionResult:
         self._writer.release()
         self._writer = None
-        prune_dir(self.recorder.clips_dir, self.recorder.max_clips)
+        self._writing_path.replace(self._path)
+        self._writing_path = None
+        self.recorder.prune()
         self._cooldown_until = now + self.cooldown_seconds
         res = SessionResult(timestamp=self._start, clip_name=self._path.name, photo=self._photo,
-                            audio_start=self._audio_start, audio_end=now)
+                            audio_start=self._audio_start, audio_end=now,candidate_only=self._candidate_only)
         self._path = None
         self._photo = None
         return res

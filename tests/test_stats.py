@@ -64,3 +64,59 @@ def test_set_prediction_updates_event(tmp_path):
     }
     hr = store.model_hitrate("v5")                    # 还没标注 → total 0
     assert hr["total"] == 0
+
+
+def test_drinking_records_minimum_interval_and_boundaries(tmp_path):
+    db = tmp_path / 't.db'
+    store = StatsStore(db)
+    # 59 秒归同次；恰好 60 秒可记下一次；重复事件不能重复计数。
+    for ts, name in [(100, 'a'), (115, 'b'), (159, 'c'), (160, 'd'), (219, 'e'), (220, 'f')]:
+        store.record_event(ts, name)
+        _label(db, name, True)
+    store.record_event(101, 'a')
+    assert [e['ts'] for e in store.drinking_records()] == [100, 160, 220]
+    assert store.count_between(0, 300) == 3
+    assert store.events_between(110, 160) == []
+    assert store.count_between(0, 160) + store.count_between(160, 300) == 3
+    # 改判会重新计算，原始片段/标注均保留。
+    _label(db, 'a', False)
+    assert [e['ts'] for e in store.drinking_records()] == [115, 219]
+    assert len(store.clip_metadata()) == 6
+
+
+def test_drinking_interval_across_midnight(tmp_path):
+    db = tmp_path / 't.db'
+    store = StatsStore(db)
+    midnight = datetime(2026, 10, 13).timestamp()
+    for delta, name in [(-20, 'a'), (10, 'b'), (40, 'c')]:
+        store.record_event(midnight + delta, name)
+        _label(db, name, True)
+    assert store.count_between(midnight - 86400, midnight) == 1
+    assert store.count_between(midnight, midnight + 86400) == 1
+    assert store.events_between(midnight, midnight + 86400)[0]['clip_name'] == 'c'
+
+
+def test_event_bulk_metadata_preserves_latest_prediction_and_review_flags(tmp_path):
+    store = StatsStore(tmp_path / 't.db')
+    store.record_event(100, 'a', predicted=1, predicted_by='v1', candidate_only=True)
+    store.record_event(200, 'a', predicted=0, predicted_by='v2', review_candidate=False)
+    store.set_water_review('a', True)
+    item = store.clip_metadata()['a']
+    assert item['prediction'] == store.clip_prediction_details()['a']
+    assert item['candidate_only'] and item['water_review'] and item['review_candidate']
+
+
+def test_october_13_split_recordings_count_as_two_visits(tmp_path):
+    db = tmp_path / 't.db'
+    store = StatsStore(db)
+    times = [(10, 7, 59, 435000), (10, 8, 14, 529000), (10, 8, 29, 612000),
+             (19, 44, 13, 119000), (19, 44, 28, 204000),
+             (19, 44, 43, 278000), (19, 44, 58, 372000)]
+    for i, (h, m, s, us) in enumerate(times):
+        ts = datetime(2026, 10, 13, h, m, s, us).timestamp()
+        name = f'clip_{int(ts * 1000)}.mp4'
+        store.record_event(ts, name)
+        _label(db, name, True)
+    start, end = day_bounds(datetime(2026, 10, 13))
+    assert store.count_between(start, end) == 2
+    assert len(store.clip_metadata()) == 7

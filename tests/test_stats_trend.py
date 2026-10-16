@@ -31,7 +31,7 @@ def test_daily_counts_buckets_and_fills_zero(tmp_path):
     stats = StatsStore(db)
     today = datetime(2026, 6, 22, 12, 0, 0)
     stats.record_event(today.timestamp(), "t1.mp4")
-    stats.record_event(today.timestamp(), "t2.mp4")
+    stats.record_event(today.timestamp() + 60, "t2.mp4")
     yday = today - timedelta(days=1)
     stats.record_event(yday.timestamp(), "y1.mp4")
     # 口径：只数确认喝水的——给三段都标 is_drinking=1

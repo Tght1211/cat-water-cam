@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+from filelock import FileLock
 from pathlib import Path
 
 
@@ -48,6 +49,7 @@ class ModelRegistry:
         self.path = Path(registry_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._file_lock = FileLock(str(self.path)+'.lock')
         self._data = self._load()
 
     def _load(self) -> dict:
@@ -59,17 +61,21 @@ class ModelRegistry:
                 d.setdefault("next_seq", 1)
                 d.setdefault("models", [])
                 return d
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                raise ValueError(f'模型注册表无法读取，原文件已保留：{self.path}') from e
         return {"active": None, "active_mode": "shadow", "next_seq": 1, "models": []}
 
     def _save(self) -> None:
-        self.path.write_text(
+        tmp = self.path.with_suffix('.tmp')
+        tmp.write_text(
             json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp.replace(self.path)
 
-    def add(self, *, path, top1, image_counts, label_counts, base, epochs, imgsz, created_ts) -> dict:
-        with self._lock:
+    def add(self, *, path, top1, image_counts, label_counts, base, epochs, imgsz, created_ts,
+            report=None) -> dict:
+        with self._lock, self._file_lock:
+            self._data=self._load()
             seq = self._data["next_seq"]
             self._data["next_seq"] = seq + 1
             entry = {
@@ -83,6 +89,7 @@ class ModelRegistry:
                 "base": base,
                 "epochs": epochs,
                 "imgsz": imgsz,
+                "report": report,
             }
             self._data["models"].insert(0, entry)  # 最新的排最前
             self._save()
@@ -90,25 +97,30 @@ class ModelRegistry:
 
     def list(self) -> list[dict]:
         with self._lock:
+            self._data=self._load()
             return [dict(m) for m in self._data["models"]]
 
     def active_id(self):
         with self._lock:
+            self._data=self._load()
             return self._data.get("active")
 
     def active_mode(self):
         with self._lock:
+            self._data=self._load()
             return self._data.get("active_mode", "shadow")
 
     def get(self, model_id: str):
         with self._lock:
+            self._data=self._load()
             for m in self._data["models"]:
                 if m["id"] == model_id:
                     return dict(m)
             return None
 
     def set_active(self, model_id, mode: str = "shadow") -> None:
-        with self._lock:
+        with self._lock, self._file_lock:
+            self._data=self._load()
             if model_id is not None and not any(m["id"] == model_id for m in self._data["models"]):
                 raise KeyError(model_id)
             self._data["active"] = model_id
@@ -117,6 +129,7 @@ class ModelRegistry:
 
     def active_path(self):
         with self._lock:
+            self._data=self._load()
             mid = self._data.get("active")
             for m in self._data["models"]:
                 if m["id"] == mid:

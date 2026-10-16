@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from catcam.geometry import Rect
+import threading
 
 
 def filter_cat_boxes(
@@ -13,6 +14,7 @@ class CatDetector:
     def __init__(self, model, confidence: float):
         self.model = model
         self.confidence = confidence
+        self._lock = threading.Lock()
 
     @classmethod
     def from_path(cls, model_path: str, confidence: float) -> "CatDetector":
@@ -21,7 +23,11 @@ class CatDetector:
         return cls(YOLO(model_path), confidence)
 
     def detect_cats(self, frame) -> list[Rect]:
-        results = self.model(frame, verbose=False)
+        with self._lock:
+            return self._detect_cats(frame)
+
+    def _detect_cats(self, frame):
+        results = self.model(frame, verbose=False, conf=self.confidence)
         detections: list[tuple[str, float, Rect]] = []
         for r in results:
             for b in r.boxes:

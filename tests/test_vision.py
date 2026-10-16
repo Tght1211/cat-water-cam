@@ -30,7 +30,7 @@ class _FakeResult:
 class _FakeModel:
     names = {0: "cat", 1: "dog"}
 
-    def __call__(self, frame, verbose=False):
+    def __call__(self, frame, verbose=False, conf=0.25):
         return [
             _FakeResult([
                 _FakeBox(0, 0.9, (0.0, 0.0, 10.0, 10.0)),

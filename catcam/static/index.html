@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh" data-theme="dark"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>喵喵水站 · 控制台</title>
+<script>
+window.applyAppearance=function(){
+  let mode='dark';try{mode=localStorage.getItem('catcam-theme')||'dark';}catch(e){}
+  if(!['dark','light'].includes(mode))mode='dark';
+  const dark=mode==='dark';
+  document.documentElement.dataset.theme=dark?'dark':'light';
+  document.documentElement.dataset.appearance=mode;
+  const label=document.querySelector('#themeLabel');
+  if(label)label.textContent={auto:'外观 · 自动',dark:'外观 · 深色',light:'外观 · 浅色'}[mode];
+};
+applyAppearance();
+</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🐱%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css"></head>
+<body>
+<div class="blob b1"></div><div class="blob b2"></div>
+
+<aside class="side">
+  <div class="logo">
+    <span class="cat" aria-hidden="true"><svg viewBox="0 0 44 44" fill="none">
+      <path d="M9 8l6 6a13 13 0 0 1 14 0l6-6-1.5 12" fill="currentColor"/>
+      <ellipse cx="22" cy="25" rx="15" ry="13" fill="currentColor"/>
+      <circle class="eye" cx="16" cy="23" r="2.1" fill="#0b3b4d"/>
+      <circle class="eye" cx="28" cy="23" r="2.1" fill="#0b3b4d"/>
+      <path d="M22 28l-2 2h4z" fill="#0b3b4d"/>
+      <path d="M6 27h7M31 27h7M6 31h6M32 31h6" stroke="#0b3b4d" stroke-width="1.4" stroke-linecap="round" opacity=".7"/></svg></span>
+    <div><b>喵喵水站</b><small>CAT · WATER · CAM</small></div>
+  </div>
+  <nav class="menu" id="menu">
+    <span class="ind" id="navInd"></span>
+    <button data-pg="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/></svg><span>总览</span></button>
+    <button data-pg="disp" id="navDisp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2S5.8 9.8 5.8 14a6.2 6.2 0 0 0 12.4 0C18.2 9.8 12 3.2 12 3.2Z"/><path d="M9.4 14.6a2.8 2.8 0 0 0 2.3 2.7"/></svg><span>饮水机</span></button>
+    <button data-pg="records"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9.5 5 2.5-5 2.5z" fill="currentColor" stroke="none"/></svg><span>喝水记录</span></button>
+    <button data-pg="replay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/><path d="M12 8v5l3 2"/></svg><span>回放</span></button>
+    <button data-pg="trend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19 9.5 11l4 4.5L20 7"/><path d="M15.5 7H20v4.5"/></svg><span>趋势</span></button>
+    <div class="gap"></div>
+    <div class="sep"></div>
+    <button data-pg="lab" class="lab-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 3v6L4.6 17.2A2 2 0 0 0 6.3 20h11.4a2 2 0 0 0 1.7-2.8L14.5 9V3"/><path d="M8 3h8M7.5 14.5h9"/></svg><span>专属模型</span><small class="review-count" id="navReviewCount" hidden>0</small></button>
+  </nav>
+  <div class="theme-control"><button id="themeSwitch" onclick="cycleAppearance()" aria-label="切换外观：深色、浅色" title="切换外观：深色、浅色"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 13.3A8.7 8.7 0 0 1 10.7 3.2 8.7 8.7 0 1 0 20.8 13.3Z"/></svg><span id="themeLabel">外观 · 深色</span></button></div>
+  <div class="theme-control"><button onclick="openMailSetup()" aria-label="邮件提醒" title="邮件提醒"><span>✉</span><span>邮件提醒</span></button></div>
+  <div class="theme-control" id="accessControl" hidden><button onclick="openAccessSetup()" aria-label="访问设置" title="访问设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>访问设置</span></button></div>
+  <div class="theme-control" id="logoutControl" hidden><button onclick="logoutAccess()" aria-label="退出登录" title="退出登录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 4H4v16h5M14 8l4 4-4 4M8 12h10"/></svg><span>退出登录</span></button></div>
+  <div class="side-foot">
+    <div class="side-pill">
+      <div><div class="n" id="sideCount">–</div><div class="t">今日喝水（次）</div></div>
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.2C12 2.2 4.8 9.9 4.8 14.7a7.2 7.2 0 0 0 14.4 0C19.2 9.9 12 2.2 12 2.2Z"/></svg>
+    </div>
+  </div>
+</aside>
+<header class="mobile-header"><a href="#/home" class="mobile-brand"><span>🐱</span>喵喵水站</a><button onclick="openMobileSettings()" aria-label="打开设置">设置 <span>☷</span></button></header>
+
+<main>
+
+<!-- ============ 总览 ============ -->
+<section id="pg-home" class="pg">
+  <div class="ph an" style="--i:0"><div><h1>总览</h1><p id="homeDate"></p></div>
+    <div class="phr"><span class="tag ok"><i></i>本地摄像头监控</span></div></div>
+  <div id="flowAlert" class="flow-alert" hidden></div>
+  <div class="grid">
+    <div class="card sp12 overview-main an" style="--i:1">
+      <div class="overview-timeline"><div class="timeline-heading"><strong>今日时间线</strong><span id="tlSummary"></span><span id="tlNow"></span></div><div id="timeline" class="timeline"></div></div>
+      <div class="grid overview-panels">
+    <div class="card sp4 an" style="--i:1"><div class="card-h">今日喝水</div>
+    <div class="card-b" style="display:flex;flex-direction:column">
+      <div class="hero-num"><span id="heroCount">0</span><small>次</small></div>
+      <div class="hero-sub"><span class="tag mute" id="heroLast"><i></i>暂无记录</span></div>
+      <div class="mini-stats">
+        <div class="ms"><div class="k">近 7 天</div><div class="v"><span id="msWeek">–</span><small>次</small></div></div>
+        <div class="ms"><div class="k">日均</div><div class="v"><span id="msAvg">–</span><small>次</small></div></div>
+        <div class="ms"><div class="k">今日摄水估算</div><div class="v"><span id="msMl">–</span><small>ml</small></div></div>
+      </div>
+      <div class="spark" id="spark"></div>
+    </div></div>
+    <div class="card sp5 an" style="--i:2"><div class="card-h">实时画面</div><div class="card-b">
+      <div class="live-frame" onclick="openLive()">
+        <img id="live" src="/stream.mjpg" alt="实时画面" onerror="if(this.getAttribute('src')&&!document.hidden&&location.hash!=='#/disp'&&document.querySelector('#pg-home').classList.contains('on'))this.src='/snapshot.jpg?t='+Date.now()">
+        <span class="live-tag"><span class="live-dot"></span>LIVE</span>
+        <span class="live-quality" id="liveQuality" hidden></span>
+        <button class="live-zoom" aria-label="放大" onclick="event.stopPropagation();openLive()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg></button>
+      </div>
+    </div></div>
+    <div id="storageCard" class="card sp3 storage-card an" style="--i:3" role="button" tabindex="0" aria-label="查看饮水机水量与设备记录" onclick="go('disp')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();go('disp');}">
+      <div class="storage-water" aria-hidden="true"><svg class="storage-wave" viewBox="0 0 600 32" preserveAspectRatio="none"><path d="M0 16 Q75 0 150 16 T300 16 T450 16 T600 16 V32 H0Z"/></svg><div class="storage-bubbles"></div></div>
+      <div class="card-h">饮水机 <span class="note" id="dmNote"></span></div>
+      <div class="card-b"><div id="dmBody" class="storage-content"></div></div>
+    </div>
+      </div>
+    </div>
+    <div class="card sp12 an health-card" style="--i:4"><div class="card-b" id="healthHome">正在读取监控状态…</div></div>
+  </div>
+</section>
+
+<!-- ============ 饮水机 ============ -->
+<section id="pg-disp" class="pg">
+  <div class="ph an" style="--i:0"><div><h1>饮水机</h1><p>照顾每一滴水，也了解小猫每一次饮水</p></div></div>
+  <div class="water-tabs"><button class="water-tab on" data-tab="water" onclick="waterTab('water')">水量与加水</button><button class="water-tab" data-tab="settings" onclick="waterTab('settings')">提醒与设备</button><button class="water-tab" data-tab="records" onclick="waterTab('records')">设备记录</button></div>
+  <div id="water-water"><div id="dispBody"></div><div class="card flow-card fountain-flow"><div class="card-b" id="flowPanel"></div></div></div>
+  <div id="water-settings" hidden><div id="waterSettings"></div></div>
+  <div id="water-records" hidden><div class="card fountain-records"><div class="card-b" id="dispenserRecords"></div></div></div>
+</section>
+
+<!-- ============ 喝水记录 ============ -->
+<section id="pg-records" class="pg">
+  <div class="ph an" style="--i:0"><div><h1>喝水记录</h1><p>只展示已确认「真喝水」的回放 · 点封面即可播放</p></div>
+    <div class="phr"><span class="tag ok" id="recCount" style="display:none"><i></i></span>
+      <label class="fchip" style="display:inline-flex;align-items:center;gap:7px;cursor:pointer">
+        <input type="checkbox" id="dlAudio" checked style="accent-color:var(--aqua);cursor:pointer"> 下载含声音</label></div></div>
+  <div class="clips an" id="recGrid" style="--i:1"></div>
+</section>
+
+<!-- ============ 趋势 ============ -->
+<section id="pg-trend" class="pg">
+  <div class="ph an" style="--i:0"><div><h1>趋势</h1><p>一眼看懂小猫的喝水情况</p></div>
+    <div class="seg-ctl" id="rangeCtl">
+      <button class="on" onclick="setRange(7,this)">近 7 天</button>
+      <button onclick="setRange(30,this)">近 30 天</button></div></div>
+  <div class="grid">
+    <div class="card sp12 an" style="--i:1"><div class="card-b">
+      <div id="healthTrend" style="margin-bottom:20px"></div><div class="trend-hero" id="trendHero">
+        <div class="trend-drop"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.2C12 2.2 4.8 9.9 4.8 14.7a7.2 7.2 0 0 0 14.4 0C19.2 9.9 12 2.2 12 2.2Z"/></svg></div>
+        <div><div class="trend-today"><span id="trToday">–</span><small>次 · 今日</small></div>
+          <div class="trend-status" id="trStatus">–</div>
+          <div class="trend-sub" id="trSub"></div></div>
+      </div></div></div>
+    <div class="card sp6 an" style="--i:2"><div class="card-h">一天里什么时候爱喝水 <span class="note" id="hourPeak"></span></div>
+      <div class="card-b"><div class="heatrow" id="hourHeat"></div>
+      <div class="heataxis"><span>0</span><span>6</span><span>12</span><span>18</span><span>24 点</span></div></div></div>
+    <div class="card sp6 an" style="--i:3"><div class="card-h">最近每天喝了多少 <span class="note" id="calNote"></span></div>
+      <div class="card-b"><div class="calheat" id="calHeat"></div>
+      <div class="callegend"><span>少</span><i class="cl" data-l="0"></i><i class="cl" data-l="1"></i><i class="cl" data-l="2"></i><i class="cl" data-l="3"></i><i class="cl" data-l="4"></i><span>多</span></div></div></div>
+  </div>
+</section>
+
+<section id="pg-replay" class="pg">
+  <div class="ph"><div><h1>回放</h1><p>画面变化就录下，普通录像不占用待复核队列。视频滚动保留 3 天。</p></div><button class="btn ghost" onclick="loadReplay()">刷新回放</button></div>
+  <p class="note" id="replayCount"></p>
+  <div class="clips" id="replayClips"></div>
+</section>
+
+<!-- ============ 实验室 ============ -->
+<section id="pg-lab" class="pg">
+  <div class="ph an" style="--i:0"><div><h1>专属模型 <span class="tag warn" id="modelPending">待复核 0</span></h1><p>从真实画面学习，让模型更了解你的小猫</p></div><span class="studio-local">本地训练 · 持续纠错</span></div>
+  <div class="studio-tabs lab-tabs" id="labTabs"><button class="on" onclick="setLab('label',this)">复核与纠错</button><button onclick="setLab('train',this)">模型训练</button><button onclick="setLab('models',this)">效果与版本</button></div>
+
+  <div class="lab-pane on an" id="lab-label" style="--i:1">
+    <div class="studio-review-intro"><div><h2>把不确定的判断，变成可靠的数据</h2><p>仅显示猫咪候选。模型判断供参考，点击喝了或没喝即可确认，原因可选。新视频请手动刷新。</p></div><div class="review-toolbar-actions"><button class="btn" id="reviewRefresh" onclick="loadLabelClips()">刷新</button><button class="btn ghost" onclick="openAutoConfirmSetup()">自动确认设置</button></div></div>
+    <div class="toolbar" id="labelFilters"><button class="fchip on" data-f="review" onclick="setLabelFilter('review',this)">待复核</button><button class="fchip" data-f="all" onclick="setLabelFilter('all',this)">全部</button><button class="fchip" data-f="yes" onclick="setLabelFilter('yes',this)">模型：喝水</button><button class="fchip" data-f="no" onclick="setLabelFilter('no',this)">模型：没喝</button><button class="fchip" data-f="mistakes" onclick="setLabelFilter('mistakes',this)">模型错题</button><span id="labCap"></span></div>
+    <details class="studio-explainer"><summary>复核和自动确认如何参与训练</summary><p>开启后，喝水得分 ≥99.5% 或 ≤0.5% 的明确结果自动确认，中间得分保留待复核。模型得分不是正确率；只有人工确认、纠错后的标签用于训练。舔水但没喝到水，可以单独标注原因。</p></details>
+    <div class="clips" id="labelClips"></div>
+  </div>
+
+  <div class="lab-pane" id="lab-train">
+    <div class="studio-training-advice" data-training-advice role="status"></div>
+    <div class="studio-grid"><div class="studio-main">
+      <section class="studio-panel"><div class="studio-panel-head"><div><span class="fountain-kicker">01 · 准备数据</span><h2>训练从正确标注开始</h2></div><span id="studioReadiness" class="tag">正在读取</span></div><div class="studio-data-grid"><div><span>等待人工标注</span><strong id="dsUn">—</strong><small>段候选录像</small></div><div class="highlight"><span>新增训练数据</span><strong id="dsNew">—</strong><small>已标注，尚未训练</small></div><div><span>已参与训练</span><strong id="dsTr">—</strong><small>段人工标注</small></div><div><span>喝水 / 没喝动作</span><strong id="dsBal">—</strong><small>启动训练每类至少 4 段</small></div></div><button class="studio-link" onclick="setLab('label',$('#labTabs').children[0])">去复核和纠错 <span>→</span></button></section>
+      <section class="studio-panel studio-training"><div class="studio-panel-head"><div><span class="fountain-kicker">02 · 开始训练</span><h2>让模型适应这个场景</h2></div><span class="studio-device">在本机运行</span></div><p class="studio-description">用已确认的喝水与没喝动作训练，再用独立片段检查漏判和误判。</p>
+        <label class="studio-field">训练方式<select id="trainBackend"><option value="s3d-temporal-v2">连续动作 · 轻量训练（推荐）</option><option value="s3d-finetuned-v1">连续动作 · 深度微调（较慢）</option><option value="videomae-temporal-v1">VideoMAE · 需下载模型</option><option value="s3d-legacy">旧版特征 · 兼容已有缓存</option></select></label>
+        <label class="studio-checkbox"><input id="trainAutoActivate" type="checkbox" checked><span>完成后自动启用合格的新版本<small>新版本退步或不满足要求时，继续保留当前模型。</small></span></label>
+        <div class="studio-train-action"><button id="trainVideoBtn" class="btn" onclick="trainVideo()">开始训练</button><span id="studioTrainHint">正在读取训练状态</span></div><div id="trainVideoProg" style="display:none"></div><div class="t-status" id="trainVideoStatus" role="status" aria-live="polite"></div>
+        <details class="studio-explainer"><summary>高级选项与数据说明</summary><label class="studio-checkbox"><input type="checkbox" id="trainVideoRebuild"><span>从头提取特征，忽略已有缓存</span></label><p>按日期隔离数据，日期不足时采用分层划分；验证集调整阈值，独立测试集报告表现。轻量训练使用连续动作窗口，深度微调会进一步调整模型主干。</p><div class="t-status" id="datasetStatus"></div></details>
+      </section>
+    </div><aside class="studio-side">
+      <section class="studio-panel studio-scene"><span class="fountain-kicker">场景准备</span><h3>先告诉模型，在哪里喝水</h3><div class="studio-scene-preview"><img src="/snapshot.jpg" alt="当前摄像头画面" loading="lazy"><span>当前画面</span></div><p>框选水盆与猫嘴活动范围，减少背景干扰。改变机位后，重新设置并训练。</p><button class="btn ghost" onclick="openSceneSetup()">设置饮水区域</button></section>
+      <section class="studio-panel studio-teacher"><div class="studio-panel-head"><span class="fountain-kicker">视觉老师</span><span class="tag">可选</span></div><h3>加快初期标注</h3><p>先由本地筛选，再请外部视觉模型辅助判断；人工确认后进入训练。</p><div class="studio-teacher-status" id="aiBudgetStatus">正在读取老师状态…</div><button class="btn ghost" onclick="openAISetup()">配置与测试 API</button></section>
+    </aside></div>
+    <section class="studio-panel studio-growth"><div class="studio-panel-head"><div><span class="fountain-kicker">03 · 检查效果</span><h2>变化有证据，进步才可信</h2></div><button class="studio-link" onclick="setLab('models',$('#labTabs').children[2])">全部版本 →</button></div><div id="modelProgress">完成训练后，展示独立测试结果及新旧版本对比。</div></section>
+  </div>
+
+  <div class="lab-pane" id="lab-models"><div class="studio-training-advice" data-training-advice role="status"></div><section class="studio-panel studio-active"><div class="studio-panel-head"><div><span class="fountain-kicker">当前运行</span><h2>正在使用的模型</h2></div></div><div id="activeBox"></div></section>
+    <div class="studio-versions-heading"><div><h2>模型版本</h2><p>查看每次训练的结果，按需要切换版本。</p></div><button class="btn ghost" onclick="recheckClips()">重新评估已有录像</button></div><p class="lab-note" id="recheckStatus" role="status"></p><div id="modelList" class="mlist"></div>
+  </div>
+</section>
+
+</main>
+
+<!-- 灯箱 / 模态 / toast -->
+<div class="lbox" id="lbox" onclick="if(event.target===this)closeLbox()"><div class="lbox-inner" id="lboxInner"></div></div>
+<div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="modal-card" id="modalCard"></div></div>
+<div id="toasts"></div>
+
+<svg width="0" height="0" style="position:absolute"><defs>
+  <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="var(--aqua)"/><stop offset="1" stop-color="var(--aqua2)"/></linearGradient>
+</defs></svg>
+
+<script src="/static/app.js" defer></script></body></html>

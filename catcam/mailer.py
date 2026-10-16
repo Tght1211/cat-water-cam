@@ -84,6 +84,8 @@ class Emailer:
         self.enabled = cfg.mail_enabled
         self.host = cfg.smtp_host
         self.port = cfg.smtp_port
+        self.security = getattr(cfg, "smtp_security", "ssl")
+        self.managed = False
         self.user = cfg.smtp_user
         self.password = cfg.smtp_password
         self.to = cfg.mail_to
@@ -115,12 +117,22 @@ class Emailer:
             img.add_header("Content-Disposition", "inline", filename=f"{cid}")
             msg.attach(img)
         ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL(self.host, self.port, context=ctx, timeout=25) as s:
+        if self.security == 'ssl':
+            connection = smtplib.SMTP_SSL(self.host, self.port, context=ctx, timeout=25)
+        else:
+            connection = smtplib.SMTP(self.host, self.port, timeout=25)
+        with connection as s:
+            if self.security == 'starttls':
+                s.ehlo()
+                s.starttls(context=ctx)
+                s.ehlo()
             s.login(self.user, self.password)
             s.sendmail(self.user, [self.to], msg.as_string())
 
     def notify_drinking(self, stats, frame, now_dt: datetime) -> bool:
         """限流通过则发一封喝水邮件；返回是否真的发了。失败只打印不抛。"""
+        if self.managed:
+            return False  # Persistent queue owns delivery and deduplication.
         now = now_dt.timestamp()
         if not self.should_send(now):
             return False
@@ -133,3 +145,13 @@ class Emailer:
         except Exception as e:  # noqa: BLE001 — 邮件失败绝不能拖垮采集循环
             print(f"邮件发送失败：{e}")
             return False
+
+
+def mail_error(error):
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return '邮箱认证失败，请检查发件邮箱和 SMTP 授权码'
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        return '收件邮箱被拒绝，请检查收件地址'
+    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+        return '无法连接邮件服务器，请检查地址、端口和网络；稍后自动重试'
+    return '邮件发送失败，请检查邮箱服务设置；稍后自动重试'

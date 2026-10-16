@@ -85,7 +85,7 @@ def test_dispenser_initial_state(tmp_path):
     assert d["ml_per_drink"] == 30.0 and d["calibrated"] is False
 
 
-def test_dispenser_refill_then_remaining_drops_with_drinks(tmp_path):
+def test_dispenser_water_estimate_and_measurement_correction(tmp_path):
     import sqlite3
     app, stats, *_ = _build(tmp_path)
     client = TestClient(app)
@@ -100,9 +100,12 @@ def test_dispenser_refill_then_remaining_drops_with_drinks(tmp_path):
         for name in ("a.mp4", "b.mp4", "c.mp4"):
             c.execute("INSERT INTO labels (clip_name, is_drinking, ts) VALUES (?, 1, NULL)", (name,))
     d2 = client.get("/api/dispenser").json()
-    assert d2["drinks_since_refill"] == 3
-    assert d2["remaining_ml"] == 2000 - 3 * 30   # 每次 30ml → 剩 1910
-    assert d2["today_ml"] >= 3 * 30
+    assert d2["drinks_since_refill"] == 1  # 同一分钟的三段只记一次
+    assert d2['remaining_ml'] == 1970  # 用户接受按次数估算
+    assert d2['water_source'] == 'estimated'
+    measured = client.post('/api/dispenser/observe', json={'ml': 1500}).json()
+    assert measured['remaining_ml'] == 1500
+    assert d2["today_ml"] == 30
 
 
 def test_dispenser_filter_countdown_and_config(tmp_path):
@@ -149,8 +152,8 @@ def test_stats_trend_shape_and_buckets(tmp_path):
     body = TestClient(app).get("/api/stats/trend?days=7").json()
     assert len(body["days"]) == 7
     assert len(body["hourly"]) == 24 and len(body["weekday"]) == 7
-    assert body["total"] == 2                      # 只数确认喝水
-    assert sum(body["hourly"]) == 2 and sum(body["weekday"]) == 2
+    assert body["total"] == 1                      # 同一时刻只记一次
+    assert sum(body["hourly"]) == 1 and sum(body["weekday"]) == 1
     assert body["active_days"] == 1
     assert "prev_total" in body
 
@@ -267,7 +270,7 @@ def test_clips_exposes_model_prediction_confidence(tmp_path):
     stats.set_prediction("clip_3000.mp4", 0, "v3", 0.18)
     body = TestClient(app).get("/api/clips").json()
     assert body["prediction_details"]["clip_3000.mp4"] == {
-        "drinking": False, "confidence": 0.18, "by": "v3"
+        "drinking": False, "confidence": 0.18, "by": "v3", "threshold": 0.5
     }
 
 
@@ -318,7 +321,7 @@ def test_activate_video_model_failure_keeps_registry_unchanged(tmp_path):
 
 class _FakeVideoTrainer:
     def __init__(self): self.started = 0; self._state = "idle"; self.last_rebuild = None
-    def start(self, rebuild=False): self.started += 1; self.last_rebuild = rebuild; self._state = "running"; return True
+    def start(self, rebuild=False, backend='s3d-temporal-v2', auto_activate=False): self.started += 1; self.last_rebuild = rebuild; self._state = "running"; return True
     def status(self): return {"state": self._state, "detail": "x", "result": None,
                               "models": [], "active": None}
 
@@ -353,3 +356,192 @@ def test_train_video_disabled_when_not_wired(tmp_path):
     client = TestClient(app)
     assert client.post("/api/train_video").json()["started"] is False
     assert client.get("/api/train_video/status").json()["state"] == "disabled"
+
+
+def test_additive_water_api_retains_drinking_events(tmp_path,monkeypatch):
+    app,stats,recorder,feedback=_build(tmp_path)
+    client=TestClient(app)
+    monkeypatch.setattr('catcam.web.time.time',lambda:1000)
+    first=client.post('/api/dispenser/add',json={'added_ml':950,'initial_remaining_ml':0}).json()
+    assert first['remaining_ml']==950
+    stats.record_event(1050,'drink.mp4')
+    feedback.record_machine_label('drink.mp4',True)
+    with stats._conn() as c:
+        c.execute('INSERT INTO labels(clip_name,is_drinking,ts) VALUES(?,?,?)',('drink.mp4',1,1050))
+    monkeypatch.setattr('catcam.web.time.time',lambda:1100)
+    second=client.post('/api/dispenser/add',json={'added_ml':1050}).json()
+    assert second['last_refill_ts']==1000
+    assert second['last_refill_ml']==2000
+    assert second['remaining_ml']==1970
+    assert second['drinks_since_refill']==1
+    assert second['reminder']['low_ml'] is None
+    assert not second['need_water']
+    assert client.post('/api/dispenser/cycle',json={}).status_code==400
+    result=client.post('/api/dispenser/cycle',json={'remaining_ml':200,'stopped_confirmed':True})
+    assert result.status_code==200
+    assert result.json()['reminder']['stop_residual_ml']==200
+
+
+def test_dry_lick_feedback_api_preserves_action_truth(tmp_path):
+    from catcam.video_trainer import _labeled_clips
+    app,stats,recorder,feedback=_build(tmp_path)
+    frame=np.zeros((48,64,3),dtype=np.uint8)
+    recorder.save_clip([frame],timestamp=2)
+    stats.record_event(2,'clip_2000.mp4',predicted=1,predicted_by='v1')
+    client=TestClient(app)
+    response=client.post('/api/feedback',json={'clip':'clip_2000.mp4','is_drinking':False,'outcome':'dry_lick','reason':'换水时没喝到'})
+    assert response.status_code==200
+    assert feedback.label_meta('clip_2000.mp4')['reason']=='换水时没喝到'
+    assert _labeled_clips(feedback)==[('clip_2000.mp4',1)]
+    assert stats.count_between(0,5)==0
+    assert client.post('/api/feedback',json={'clip':'clip_2000.mp4','is_drinking':True,'outcome':'dry_lick'}).status_code==400
+
+
+def test_large_clip_list_never_opens_videos_or_queries_individually(tmp_path, monkeypatch):
+    import catcam.web as web
+    app, stats, recorder, feedback = _build(tmp_path)
+    recorder.max_clips = 2000
+    for i in range(1000):
+        (recorder.clips_dir / f'clip_{1000000 + i * 1000}.mp4').touch()
+    name = 'clip_1000000.mp4'
+    feedback.record_video_duration(recorder.clips_dir / name, 12.25)
+    with feedback._conn() as conn:
+        conn.execute("INSERT INTO labels (clip_name,is_drinking,source) VALUES (?,1,'human')", (name,))
+    expected = feedback.label_meta(name)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('列表不应打开录像、写入数据或逐段查询')
+    monkeypatch.setattr(web.cv2, 'VideoCapture', forbidden)
+    monkeypatch.setattr(feedback, 'record_video_duration', forbidden)
+    monkeypatch.setattr(feedback, 'get_label', forbidden)
+    monkeypatch.setattr(feedback, 'label_meta', forbidden)
+    monkeypatch.setattr(stats, 'requires_visual_review', forbidden)
+    monkeypatch.setattr(stats, 'requires_water_review', forbidden)
+    statements = []
+    for store in (stats, feedback):
+        connect = store._conn
+        def traced(connect=connect):
+            conn = connect()
+            conn.set_trace_callback(statements.append)
+            return conn
+        monkeypatch.setattr(store, '_conn', traced)
+    data = TestClient(app).get('/api/clips').json()
+    assert len(data['clips']) == 1000
+    assert data['meta'][name] == expected
+    assert data['durations'][name] == 12.2
+    assert data['durations']['clip_1001000.mp4'] is None
+    assert len(statements) <= 5
+
+
+def test_thumbnail_cache_invalidates_on_video_change(tmp_path, monkeypatch):
+    import catcam.web as web
+    app, _, recorder, _ = _build(tmp_path)
+    path = recorder.clips_dir / 'clip_1000.mp4'
+    path.write_bytes(b'placeholder')
+    opened = []
+    class Capture:
+        def __init__(self, path): opened.append(path)
+        def get(self, prop): return 30
+        def set(self, prop, value): return True
+        def read(self): return True, np.zeros((48, 64, 3), np.uint8)
+        def release(self): pass
+    monkeypatch.setattr(web.cv2, 'VideoCapture', Capture)
+    client = TestClient(app)
+    for _ in range(2):
+        assert client.get('/clips/clip_1000.mp4/thumb.jpg').status_code == 200
+    assert len(opened) == 1
+    path.write_bytes(b'replaced recording')
+    assert client.get('/clips/clip_1000.mp4/thumb.jpg').status_code == 200
+    assert len(opened) == 2
+
+
+def test_clip_api_and_stats_use_same_minute_interval(tmp_path):
+    stats = StatsStore(tmp_path / 'shared.db')
+    feedback = FeedbackStore(tmp_path / 'shared.db', tmp_path / 'train')
+    recorder = ClipRecorder(tmp_path / 'clips', max_clips=10, fps=30)
+    for ts in [100, 115, 130, 160]:
+        name = f'clip_{ts * 1000}.mp4'
+        (recorder.clips_dir / name).touch()
+        stats.record_event(ts, name)
+        with feedback._conn() as conn:
+            conn.execute("INSERT INTO labels(clip_name,is_drinking,source) VALUES (?,1,'human')", (name,))
+    app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir)
+    data = TestClient(app).get('/api/clips').json()
+    assert data['drinking_records'] == ['clip_160000.mp4', 'clip_100000.mp4']
+    assert len(data['clips']) == 4  # 回放和复核仍可访问所有片段
+    assert stats.count_between(0, 1000) == 2
+
+
+
+def _paged_fixture(tmp_path, count=35):
+    stats = StatsStore(tmp_path / 'shared.db')
+    feedback = FeedbackStore(tmp_path / 'shared.db', tmp_path / 'training')
+    recorder = ClipRecorder(tmp_path / 'clips', max_clips=2000, fps=30)
+    names = []
+    for i in range(count):
+        name = f'clip_{1700000000000 + i * 1000}.mp4'
+        (recorder.clips_dir / name).touch()
+        stats.record_event(1700000000 + i, name, predicted=i % 2, predicted_by='v1')
+        names.append(name)
+    app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir)
+    return TestClient(app), stats, feedback, recorder, list(reversed(names))
+
+
+def test_review_pagination_bounds_payload_and_never_opens_video(tmp_path, monkeypatch):
+    import catcam.web as web
+    client, stats, feedback, recorder, names = _paged_fixture(tmp_path, 1000)
+    def forbidden(*a, **k):
+        raise AssertionError('分页不得打开视频')
+    monkeypatch.setattr(web.cv2, 'VideoCapture', forbidden)
+    data = client.get('/api/clips/page').json()
+    assert data['clips'] == names[:12]
+    assert data['total'] == 1000
+    assert data['counts']['yes'] == data['counts']['no'] == 500
+    assert data['next_cursor'] == names[11]
+    assert data['snapshot'] == names[0]
+    assert 'drinking_records' not in data
+    for field in ['labels', 'meta', 'durations', 'review_candidates', 'prediction_details']:
+        assert set(data[field]) == set(names[:12])
+    assert len(client.get('/api/clips/page').content) < 15000
+    assert client.get('/api/clips/page?limit=49').status_code == 422
+    assert client.get('/api/clips/page?limit=0').status_code == 422
+    assert client.get('/api/clips/page?filter=invalid').status_code == 422
+    assert client.get('/api/clips/page?cursor=../x').status_code == 422
+
+
+def test_review_cursor_handles_new_clips_and_labels_without_skipping(tmp_path):
+    client, stats, feedback, recorder, names = _paged_fixture(tmp_path)
+    first = client.get('/api/clips/page').json()
+    # 第一页标完，新录像加入。旧游标应从第13条继续，不受 OFFSET 位移影响。
+    with feedback._conn() as conn:
+        conn.executemany("INSERT INTO labels (clip_name,is_drinking,source) VALUES (?,1,'human')",
+                         [(name,) for name in first['clips']])
+    new = 'clip_1800000000000.mp4'
+    (recorder.clips_dir / new).touch()
+    stats.record_event(1800000000, new)
+    seen = first['clips'][:]
+    cursor = first['next_cursor']
+    while cursor:
+        data = client.get('/api/clips/page', params={'cursor': cursor, 'snapshot': first['snapshot']}).json()
+        seen.extend(data['clips'])
+        cursor = data['next_cursor']
+    assert seen == names
+    summary = client.get('/api/clips/summary', params={'since': first['snapshot']}).json()
+    assert summary == {'pending_count': 24, 'new_count': 1}
+    assert client.get('/api/clips/page').json()['clips'][0] == new
+
+
+def test_review_page_filters_counts_and_human_review_semantics(tmp_path):
+    client, stats, feedback, recorder, names = _paged_fixture(tmp_path, 6)
+    # newest predicted yes is human-confirmed false -> model mistake
+    with feedback._conn() as conn:
+        conn.execute("INSERT INTO labels (clip_name,is_drinking,action_drinking,source) VALUES (?,0,0,'human')", (names[0],))
+    stats.set_review_candidate(names[-1], False)
+    all_data = client.get('/api/clips/page?filter=all').json()
+    assert all_data['counts'] == {'all': 5, 'review': 4, 'yes': 3, 'no': 2, 'mistakes': 1}
+    assert client.get('/api/clips/page?filter=mistakes').json()['clips'] == [names[0]]
+    assert len(client.get('/api/clips/page?filter=yes').json()['clips']) == 3
+    assert len(client.get('/api/clips/page?filter=no').json()['clips']) == 2
+    # 人工标注片段仍可在全部中回看，即使路由原本归普通回放。
+    stats.set_review_candidate(names[0], False)
+    assert names[0] in client.get('/api/clips/page?filter=all').json()['clips']
+    assert client.get('/api/clips/page', params={'cursor': names[-1]}).json()['clips'] == []

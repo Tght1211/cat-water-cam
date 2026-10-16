@@ -1,4 +1,5 @@
 from datetime import datetime
+import pytest
 from catcam.judge import Verdict, VLMClipJudge, judge_and_notify
 
 
@@ -127,7 +128,7 @@ def test_route_gate_local_authority_no_vlm():
     assert r["emailed"] is True                       # 本地权威判喝水 → 发
     assert lab.labeled == []                          # gate 不调 VLM（画面不上传）
     assert fb.machine == [("b.mp4", True, "local")]   # 本地写计数标签
-    assert st.preds == []                             # gate 不另记影子
+    assert st.preds == [('b.mp4', 1, 'v5', 0.9)]  # 自动判定也保留预测用于复核
 
 
 def test_route_no_local_is_phase1():
@@ -144,3 +145,32 @@ def test_route_gate_notdrinking_silent():
     route_clip(clip_path="d.mp4", start_ts=1700000000.0, photo="P", ai_labeler=None,
                local_judge=local, mode="gate", emailer=em, stats=st, feedback=fb)
     assert em.sent == [] and fb.machine == [("d.mp4", False, "local")]
+
+
+@pytest.mark.parametrize('drinking,score,uncertain,expected',[
+    (True,1.,False,True),(False,0.,False,True),(True,.995,False,True),
+    (False,.005,False,True),(True,.99,False,False),(False,.01,False,False),
+    (True,1.,True,False),(True,float('nan'),False,False),
+])
+def test_extreme_auto_confirmation_keeps_other_results_for_review(drinking,score,uncertain,expected):
+    em,st,fb=_FakeEmailer(),_FakeStats(),_FakeFeedback()
+    class Local:
+        version='v2'
+        def judge(self,path):return Verdict(drinking,score,'','v2',uncertain)
+    result=route_clip(clip_path='a.mp4',start_ts=100,photo='P',ai_labeler=None,local_judge=Local(),
+                      mode='shadow',emailer=em,stats=st,feedback=fb,auto_confirm_extremes=True)
+    assert bool(fb.machine)==expected
+    assert result['emailed']==(expected and drinking)
+
+
+@pytest.mark.parametrize('mode',['shadow','gate'])
+def test_high_action_score_during_stopped_water_needs_intake_review(mode):
+    em,st,fb=_FakeEmailer(),_FakeStats(),_FakeFeedback()
+    st.requires_water_review=lambda name:True
+    class Local:
+        version='v2'
+        def judge(self,path):return Verdict(True,1.0,'舔水动作','v2',False)
+    result=route_clip(clip_path='dry.mp4',start_ts=100,photo='P',ai_labeler=None,local_judge=Local(),mode=mode,emailer=em,stats=st,feedback=fb,auto_confirm_extremes=True)
+    assert not fb.machine
+    assert result['authority'] is None
+    assert result['emailed'] is False

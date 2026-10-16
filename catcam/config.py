@@ -8,12 +8,15 @@ from pathlib import Path
 @dataclass
 class Config:
     camera_index: int = 0
+    camera_device_name: str = ""  # macOS固定设备名，拔插后不误切换内置摄像头
     # 视频源：留空则用 camera_index 摄像头；填一个视频文件路径则改用该文件
     # （方便还没接摄像头时，用一段录好的视频测试识别/录制/标注全流程）。
     video_source: str = ""
-    frame_width: int = 640
-    frame_height: int = 480
-    fps: int = 10
+    frame_width: int = 480
+    frame_height: int = 360
+    fps: int = 30
+    motion_recording: bool = True
+    retention_days: float = 3.0
     # 水碗区域，0-1 比例 (x1, y1, x2, y2)，与分辨率无关
     bowl_roi: tuple[float, float, float, float] = (0.3, 0.3, 0.7, 0.7)
     # 猫框与水碗框的交集面积 / 水碗面积 >= 此值才算「猫在水碗」
@@ -35,11 +38,14 @@ class Config:
     # 如需局域网内其它设备直接访问，可在 config.json 显式改为 "0.0.0.0"（会暴露给整个局域网）。
     web_host: str = "127.0.0.1"
     web_port: int = 8000
+    web_password_hash: str = ""
+    web_session_secret: str = ""
 
     # 邮件提醒：猫来喝水时发一封带照片+今日次数+周/月趋势的 HTML 邮件。
     # 凭据写在 config.json（已 gitignore，不进库）。SMTP 密码是邮箱「授权码」，不是登录密码。
     mail_enabled: bool = False
     smtp_host: str = "smtp.qq.com"
+    smtp_security: str = "ssl"  # ssl 或 starttls
     smtp_port: int = 465  # QQ 邮箱 SSL
     smtp_user: str = ""   # 发件邮箱（如 2890549308@qq.com）
     smtp_password: str = ""  # 授权码
@@ -51,24 +57,30 @@ class Config:
     cls_base_model: str = "yolov8n-cls.pt"
     train_epochs: int = 15
     train_imgsz: int = 96
+    # 用户可选择自动确认两端的模型得分；机器标签不参与训练真值。
+    auto_confirm_extremes: bool = False
 
     # AI 自动标注 / 整段裁判（外部视觉大模型，OpenRouter / OpenAI 兼容）：录一段自动判「喝/没喝」，
     # 它是「发邮件 + 记次数」的唯一权威，并把判定写进训练数据。
     # 默认开：仍受 ai_api_key 把关——没填 key 则不动作、不上传。
     # ⚠️ 填了 key 开始判定后，猫的画面帧会上传外部视觉大模型，违背「画面只在本机/局域网」原则。
-    ai_label_enabled: bool = True
+    ai_label_enabled: bool = False
     ai_base_url: str = "https://openrouter.ai/api/v1"
     ai_api_key: str = ""                              # OpenRouter key，写在 config.json（已 gitignore）
-    ai_model: str = "google/gemma-4-31b-it:free"      # 主模型
+    ai_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    ai_daily_budget: int = 40
+    ai_min_interval_seconds: float = 60.0
+    ai_input_mode: str = "frames"
     # 兜底/轮换模型：连同主模型一起组成模型池，每次调用轮换起始模型（分摊各免费模型额度），
     # 某个失败（限流/报错）就顺位换下一个，全失败才算这段标注失败。都要支持视觉输入。
     ai_fallback_models: list[str] = field(default_factory=list)
-    ai_label_frames: int = 3                          # 每段送几帧给模型
+    ai_label_frames: int = 16
 
-    # 夜间/弱光（此摄像头无红外）：整体亮度低于阈值算「暗」，暗帧做弱光增强后
-    # 用「画面变化」识别行为。record_at_night=False 则天黑直接不记录。
+    # 使用原始画面，不做弱光增强；饮水区域画质不足时停止记录。
+    # 按画面亮度判断弱光，不按钟点；补光后画面够亮即可继续记录。
     night_brightness_threshold: float = 50.0
-    record_at_night: bool = True
+    record_at_night: bool = False
+    minimum_monitor_brightness: float = 50.0
 
     # 检测节奏：每隔这么久跑一次 YOLO 识别（与采集/预览解耦，预览始终流畅）。
     detect_interval_seconds: float = 0.2
