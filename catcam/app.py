@@ -37,7 +37,7 @@ from catcam.model_review import ModelReview
 from catcam.vision import CatDetector
 from catcam.camera import ReconnectingCapture,FreshMacCapture,mac_camera_name
 from catcam.web import create_app
-from catcam.flow import FlowMonitor
+from catcam.flow import FlowMonitor, OutletOcclusion
 from catcam.motion import MotionDetector
 from catcam.review_routing import ReviewRouter
 from catcam.notifications import EmailNotifications
@@ -259,7 +259,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
         else None
     )
     presence = Presence()
-    outlet_occlusion = Presence()
+    outlet_occlusion = OutletOcclusion()
     motion = MotionDetector()
     # 近景常只拍到猫头，YOLO 可能间歇漏框；背景前景保持器让猫停住时仍继续录制。
     bowl_presence = nightvision.LowLightPresenceDetector()
@@ -282,12 +282,8 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
     flow = FlowMonitor(Path(cfg.data_dir) / "dispenser_flow")
 
     def flow_calibrate(kind):
-        state = latest.get_state()
-        if state is None:
-            raise ValueError('摄像头尚未提供画面，请稍后重试')
-        stamp, frame, _ = state
-        quality = nightvision.assess_quality(frame, flow.roi, 50)
-        return flow.calibrate(kind, frame, quality['usable'] and time.time()-stamp < 2, outlet_occlusion.get()[0])
+        return flow.calibrate_live(kind, latest.get_state(),
+                                   outlet_occlusion.get(flow.roi, time.time()))
 
     dispenser = DispenserStore(
         cfg.db_path, cfg.dispenser_default_ml_per_drink, cfg.filter_cycle_days)
@@ -569,7 +565,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
             if cfg.motion_recording:
                 presence.set(now,motion.observe(now,frame))
             # 水面变化不等于猫遮挡；出水口按自己的区域检查画质和猫框。
-            flow.observe(now, raw, True, outlet_occlusion.get()[0])
+            flow.observe(now, raw, True, outlet_occlusion.get(flow.roi, time.time()))
             if now + .002 >= next_buf:
                 next_buf += buf_interval
                 if next_buf < now - buf_interval:
@@ -630,8 +626,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
                 foreground_present = bowl_presence.observe(frame, cfg.bowl_roi, now)['present']
             cats = [] if time.time()-now > 2 else cat_detector.detect_cats(frame)
             h, w = frame.shape[:2]
-            outlet = ratio_rect_to_pixels(flow.roi, w, h)
-            outlet_occlusion.set(now, foreground_present or any(cat_overlaps_bowl(cat, outlet, .15) for cat in cats))
+            outlet_occlusion.set(now, cats, w, h)
             if cfg.motion_recording:
                 time.sleep(cfg.detect_interval_seconds)
                 continue

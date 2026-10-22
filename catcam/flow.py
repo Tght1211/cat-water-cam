@@ -11,6 +11,27 @@ import cv2
 import numpy as np
 
 from catcam.nightvision import assess_quality
+from catcam.geometry import cat_overlaps_bowl, ratio_rect_to_pixels
+
+
+class OutletOcclusion:
+    """只按新鲜猫框检查出水口；水盆前景变化不能证明这里被遮挡。"""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.sample = None
+
+    def set(self, stamp, cats, width, height):
+        with self.lock:
+            self.sample = (stamp, tuple(cats), width, height)
+
+    def get(self, roi, now):
+        with self.lock:
+            sample = self.sample
+        if sample is None or not 0 <= now-sample[0] <= 3:
+            return False
+        stamp, cats, width, height = sample
+        outlet = ratio_rect_to_pixels(roi, width, height)
+        return any(cat_overlaps_bowl(cat, outlet, .15) for cat in cats)
 
 
 class FlowMonitor:
@@ -39,6 +60,7 @@ class FlowMonitor:
         self.fault_since = 0
         self.changed_at = 0
         self.distance = None
+        self.observation = None
         self._evidence_frames = deque(maxlen=8)  # 每半秒一帧，仅保留最近几秒
         history = self.directory / 'transitions.jsonl'
         if history.exists():
@@ -181,11 +203,28 @@ class FlowMonitor:
             with (self.directory / 'transitions.jsonl').open('a') as log:
                 log.write(json.dumps({'ts': now, 'state': state, 'alert': self.alert, 'fault_since':self.fault_since})+'\n')
 
+    def calibrate_live(self, kind, state, occluded=False, now=None):
+        """校准使用最新原始画面，并分别说明时效、局部画质和遮挡问题。"""
+        if state is None:
+            raise ValueError('摄像头尚未提供画面，请稍后重试')
+        now = time.time() if now is None else now
+        stamp, frame, _ = state
+        if not 0 <= now-stamp < 2:
+            raise ValueError('摄像头画面已超过 2 秒未更新，请等待实时画面恢复后重试')
+        quality = assess_quality(frame, self.roi, 50)
+        if not quality['usable']:
+            raise ValueError(f"框选出水口画质不足（亮度 {quality['brightness']}，细节对比 {quality['contrast']}），请检查框选区域或补光")
+        return self.calibrate(kind, frame, occluded=occluded)
+
     def calibrate(self, kind, frame, usable=True, occluded=False):
         if kind not in ('stopped', 'flowing'):
             raise ValueError('请选择停止出水或正在出水')
-        if frame is None or not usable or occluded:
-            raise ValueError('请在光线充足、猫咪未遮挡出水口时确认')
+        if frame is None:
+            raise ValueError('摄像头尚未提供画面，请稍后重试')
+        if not usable:
+            raise ValueError('出水口区域光线或画面细节不足，请检查框选区域并补光')
+        if occluded:
+            raise ValueError('检测到猫咪遮挡框选的出水口，请等猫咪离开后重试')
         with self.lock:
             if not cv2.imwrite(str(self.directory / f'{kind}.jpg'), frame):
                 raise ValueError('参考画面保存失败')
@@ -217,6 +256,7 @@ class FlowMonitor:
             for kind in ('stopped', 'flowing'):
                 (self.directory / f'{kind}.jpg').unlink(missing_ok=True)
             self.refs.clear()
+            self.observation = None
             self.previous = None
             self._motion_window.clear()
             self.pending = None
@@ -236,7 +276,9 @@ class FlowMonitor:
                 self.previous = None
                 self._motion_window.clear()
                 self._evidence_frames.clear()
-            valid = usable and not occluded and assess_quality(frame, self.roi, 50)['usable']
+            quality = assess_quality(frame, self.roi, 50)
+            valid = usable and not occluded and quality['usable']
+            self.observation = {**quality, 'occluded': bool(occluded), 'observed_at': now}
             if valid:
                 self._remember_frame(now, frame)
                 if self.alert:
@@ -304,6 +346,7 @@ class FlowMonitor:
             downtime = sum(max(0,min(now,row['end'] or now)-max(today,row['start'])) for row in self.incidents)
             recovery = next((row.copy() for row in reversed(self.incidents) if row['end'] is not None and not row['dismissed']),None)
             return {'incidents':list(reversed(self.incidents[-30:])), 'recovery':recovery, 'today_downtime_seconds':round(downtime), 'state': state, 'alert': self.alert, 'message': messages[state],
+                    'observation': self.observation,
                     'calibration_complete': not missing, 'missing_references': missing,
                     'roi': self.roi, 'has_stopped_reference': 'stopped' in self.refs,
                     'has_flowing_reference': 'flowing' in self.refs,

@@ -245,3 +245,43 @@ def test_occlusion_breaks_multiframe_confirmation(tmp_path):
     for t in (4, 4.5, 5, 5.5):
         m.observe(base+t, image(), True)
     assert m.alert
+
+
+def test_outlet_occlusion_only_uses_fresh_boxes_in_selected_region():
+    from catcam.flow import OutletOcclusion
+    obstruction = OutletOcclusion()
+    roi = (.4, .6, .7, .9)
+    assert not obstruction.get(roi, 100)
+    obstruction.set(100, [(0, 0, 25, 25)], 100, 100)
+    assert not obstruction.get(roi, 100.5)  # 猫在画面别处不等于遮挡出水口
+    obstruction.set(101, [(40, 60, 70, 90)], 100, 100)
+    assert obstruction.get(roi, 101.5)
+    assert not obstruction.get(roi, 104.1)  # 不把旧猫框无限期留作遮挡
+    assert not obstruction.get((0, 0, .2, .2), 101.5)  # 重新框选立即按新区域计算
+    obstruction.set(102, [], 100, 100)
+    assert not obstruction.get(roi, 102)
+
+
+def test_live_reference_reports_specific_blocking_reason(tmp_path):
+    m = FlowMonitor(tmp_path)
+    with pytest.raises(ValueError, match='尚未提供'):
+        m.calibrate_live('flowing', None, now=100)
+    with pytest.raises(ValueError, match='超过 2 秒'):
+        m.calibrate_live('flowing', (97, image(), False), now=100)
+    with pytest.raises(ValueError, match='画质不足.*亮度'):
+        m.calibrate_live('flowing', (100, np.zeros_like(image()), False), now=100)
+    with pytest.raises(ValueError, match='猫咪遮挡'):
+        m.calibrate_live('flowing', (100, image(), False), occluded=True, now=100)
+    assert not m.refs
+    result = m.calibrate_live('flowing', (100, image(), False), now=100)
+    assert result['has_flowing_reference']
+    assert not result['alert']
+
+
+def test_flow_observation_explains_local_quality_and_occlusion(tmp_path):
+    m = FlowMonitor(tmp_path)
+    m.observe(100, image(), True, occluded=False)
+    observation = m.status(100)['observation']
+    assert observation['usable'] and not observation['occluded']
+    m.observe(101, image(), True, occluded=True)
+    assert m.status(101)['observation']['occluded']
