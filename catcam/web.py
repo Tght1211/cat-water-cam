@@ -64,6 +64,10 @@ class FeedbackBody(BaseModel):
     reason: str | None = None
 
 
+class DrinkIntervalsBody(BaseModel):
+    segments: list[list[float]]
+
+
 def create_app(
     stats: StatsStore,
     recorder: ClipRecorder,
@@ -825,6 +829,45 @@ def create_app(
     thumb_lock = Lock()
     thumb_decode_locks = [Lock() for _ in range(32)]
 
+    @app.get('/clips/{name}/timeline.jpg')
+    def clip_timeline(name: str, request: Request):
+        if '/' in name or '\\' in name or '..' in name:
+            raise HTTPException(status_code=400,detail='录像名称无效')
+        path=clips_dir/name
+        if not path.is_file() or path.is_symlink():
+            raise HTTPException(status_code=404,detail='录像不存在')
+        info=path.stat()
+        key=('timeline',name,info.st_size,info.st_mtime_ns)
+        etag='"'+hashlib.sha256(repr(key).encode()).hexdigest()[:24]+'"'
+        headers={'Cache-Control':'private, no-cache','ETag':etag}
+        if request.headers.get('if-none-match')==etag:
+            return Response(status_code=304,headers=headers)
+        with thumb_decode_locks[hash(name)%len(thumb_decode_locks)]:
+            with thumb_lock:
+                content=thumb_cache.get(key)
+            if content is None:
+                import numpy as np
+                cap=cv2.VideoCapture(str(path))
+                frames=[]
+                try:
+                    count=int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                    for index in range(8):
+                        cap.set(cv2.CAP_PROP_POS_FRAMES,max(0,int(max(0,count-1)*index/7)))
+                        ok,frame=cap.read()
+                        if not ok:
+                            raise HTTPException(status_code=404,detail='无法读取时间轴缩略帧')
+                        frames.append(cv2.resize(frame,(96,54)))
+                finally:
+                    cap.release()
+                ok,encoded=cv2.imencode('.jpg',np.concatenate(frames,axis=1),[cv2.IMWRITE_JPEG_QUALITY,65])
+                if not ok:
+                    raise HTTPException(status_code=500,detail='缩略帧编码失败')
+                content=encoded.tobytes()
+                with thumb_lock:
+                    thumb_cache[key]=content
+                    while len(thumb_cache)>128:thumb_cache.popitem(last=False)
+        return Response(content,media_type='image/jpeg',headers=headers)
+
     @app.get("/clips/{name}/thumb.jpg")
     def clip_thumb(name: str, request: Request):
         # 用中间帧做封面，比开头的空场/刚入画更有判断价值。
@@ -936,6 +979,23 @@ def create_app(
         return StreamingResponse(
             gen(), media_type="multipart/x-mixed-replace; boundary=frame"
         )
+
+    @app.get('/api/drinking-calibration')
+    def drinking_calibration():
+        return dispenser.calibration(stats) if dispenser is not None else {}
+
+    @app.post('/api/clips/{name}/drinking-intervals')
+    def save_drinking_intervals(name: str, body: DrinkIntervalsBody):
+        if '/' in name or '\\' in name or '..' in name:
+            raise HTTPException(status_code=400,detail='录像名称无效')
+        path = clips_dir/name
+        if not path.is_file() or path.is_symlink():
+            raise HTTPException(status_code=404,detail='录像不存在')
+        try:
+            segments, seconds = feedback.set_intervals(name, body.segments, clip_duration(path))
+        except ValueError as error:
+            raise HTTPException(status_code=400,detail=str(error))
+        return {'segments':segments,'seconds':seconds,'calibration':dispenser.calibration(stats) if dispenser is not None else {}}
 
     @app.post("/api/feedback")
     def post_feedback(body: FeedbackBody):

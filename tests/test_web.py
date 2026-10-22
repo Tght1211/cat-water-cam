@@ -1,4 +1,5 @@
 import sqlite3
+import pytest
 import time
 import numpy as np
 from fastapi.testclient import TestClient
@@ -670,3 +671,38 @@ def test_trend_calendar_periods_and_daily_totals(tmp_path):
         assert len(response['days']) == length
         assert response['days'][-1]['date'] == now.strftime('%m-%d')
         assert sum(day['count'] for day in response['days']) == response['total'] == 1
+
+
+def test_drinking_intervals_save_reload_and_reject(tmp_path):
+    app, stats, recorder, feedback = _build(tmp_path)
+    frame=np.zeros((48,64,3),np.uint8)
+    recorder.save_clip([frame]*10,timestamp=1.0)
+    name='clip_1000.mp4'
+    feedback.label_clip(recorder.clips_dir/name,True)
+    stats.record_event(1.0,name)
+    client=TestClient(app)
+    response=client.post(f'/api/clips/{name}/drinking-intervals',json={'segments':[[.1,.6],[.5,1],[1.5,1.8]]})
+    assert response.status_code==200
+    assert response.json()['seconds']==pytest.approx(1.2)
+    meta=client.get('/api/clips').json()['meta'][name]
+    assert meta['drinking_intervals']==[[.1,1],[1.5,1.8]]
+    assert client.post(f'/api/clips/{name}/drinking-intervals',json={'segments':[[0,99]]}).status_code==400
+    assert client.post('/api/feedback',json={'clip':name,'is_drinking':False,'outcome':'no_action'}).status_code==200
+    assert stats.count_between(0,10)==0
+    assert 'drinking_intervals' not in client.get('/api/clips').json()['meta'][name]
+    assert client.post(f'/api/clips/{name}/drinking-intervals',json={'segments':[[0,1]]}).status_code==400
+
+
+def test_timeline_strip_has_real_frames_and_uses_cache(tmp_path,monkeypatch):
+    import cv2
+    app, _, recorder, _ = _build(tmp_path)
+    recorder.save_clip([np.full((48,64,3),i*20,np.uint8) for i in range(10)],timestamp=1)
+    client=TestClient(app)
+    response=client.get('/clips/clip_1000.mp4/timeline.jpg')
+    assert response.status_code==200
+    image=cv2.imdecode(np.frombuffer(response.content,np.uint8),cv2.IMREAD_COLOR)
+    assert image.shape[:2]==(54,768)
+    assert image[:,:96].mean()<image[:,-96:].mean()
+    monkeypatch.setattr(cv2,'VideoCapture',lambda *_:pytest.fail('时间轴缩略帧应使用缓存'))
+    assert client.get('/clips/clip_1000.mp4/timeline.jpg').content==response.content
+    assert client.get('/clips/clip_1000.mp4/timeline.jpg',headers={'If-None-Match':response.headers['etag']}).status_code==304

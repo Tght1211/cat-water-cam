@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 
 from catcam.database import connect
 import time
@@ -73,6 +74,7 @@ class FeedbackStore:
             if 'drinking_seconds' not in cols:
                 conn.execute('ALTER TABLE labels ADD COLUMN drinking_seconds REAL')
             conn.execute('CREATE TABLE IF NOT EXISTS clip_durations (clip_name TEXT PRIMARY KEY, video_seconds REAL NOT NULL)')
+            conn.execute('CREATE TABLE IF NOT EXISTS drink_intervals (clip_name TEXT PRIMARY KEY, segments TEXT NOT NULL, updated REAL NOT NULL)')
             conn.execute('CREATE TABLE IF NOT EXISTS clip_notes (clip_name TEXT PRIMARY KEY, reason TEXT NOT NULL)')
 
     def clip_notes(self):
@@ -148,6 +150,9 @@ class FeedbackStore:
                 "drinking_seconds=CASE WHEN excluded.is_drinking=1 THEN labels.drinking_seconds ELSE NULL END",
                 (clip_path.name,int(is_drinking),time.time(),source,confidence,reason,int(action),outcome),
             )
+        if not is_drinking:
+            with self._conn() as conn:
+                conn.execute('DELETE FROM drink_intervals WHERE clip_name=?', (clip_path.name,))
         sub = "drinking" if action else "not_drinking"
         # 改判时移除旧类别的帧，避免同一段同时成为正、负样本。
         opposite = "not_drinking" if action else "drinking"
@@ -224,16 +229,35 @@ class FeedbackStore:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT l.clip_name,l.is_drinking,l.source,l.confidence,l.reason,"
-                "l.drinking_seconds,d.video_seconds,l.action_drinking,l.outcome "
-                "FROM labels l LEFT JOIN clip_durations d ON l.clip_name=d.clip_name"
+                "l.drinking_seconds,d.video_seconds,l.action_drinking,l.outcome,i.segments "
+                "FROM labels l LEFT JOIN clip_durations d ON l.clip_name=d.clip_name LEFT JOIN drink_intervals i ON l.clip_name=i.clip_name"
             ).fetchall()
             durations = dict(conn.execute('SELECT clip_name,video_seconds FROM clip_durations'))
             notes = dict(conn.execute('SELECT clip_name,reason FROM clip_notes'))
-        return {"meta": {r[0]: self._label_meta_row(r[1:]) for r in rows},
+        metadata = {r[0]:self._label_meta_row(r[1:9]) for r in rows}
+        intervals = {r[0]:json.loads(r[9]) for r in rows if r[9] is not None}
+        for name, segments in intervals.items():
+            if name in metadata and metadata[name]['is_drinking']:
+                metadata[name]['drinking_intervals'] = segments
+        return {"meta": metadata,
                 "durations": durations, "notes": notes}
+
+    def set_intervals(self, clip_name, segments, duration):
+        from catcam.drink_intervals import normalize_intervals
+        segments = normalize_intervals(segments, duration)
+        seconds = sum(end-start for start,end in segments)
+        with self._conn() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT is_drinking FROM labels WHERE clip_name=?', (clip_name,)).fetchone()
+            if not row or not row[0]:
+                raise ValueError('请先确认这段确实喝到了水')
+            connection.execute("UPDATE labels SET drinking_seconds=?,source='human',confidence=NULL,trained_version=NULL,ts=? WHERE clip_name=?", (seconds,time.time(),clip_name))
+            connection.execute('INSERT INTO drink_intervals VALUES(?,?,?) ON CONFLICT(clip_name) DO UPDATE SET segments=excluded.segments,updated=excluded.updated', (clip_name,json.dumps(segments),time.time()))
+        return segments,seconds
 
     def set_duration(self, clip_name, seconds):
         with self._conn() as c:
+            c.execute('DELETE FROM drink_intervals WHERE clip_name=?',(clip_name,))
             c.execute('UPDATE labels SET drinking_seconds=? WHERE clip_name=? AND is_drinking=1 AND source=\'human\'',
                       (seconds,clip_name))
 
