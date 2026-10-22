@@ -830,14 +830,16 @@ def create_app(
     thumb_decode_locks = [Lock() for _ in range(32)]
 
     @app.get('/clips/{name}/timeline.jpg')
-    def clip_timeline(name: str, request: Request):
+    def clip_timeline(name: str, request: Request, part: int = 0, parts: int = 1):
         if '/' in name or '\\' in name or '..' in name:
             raise HTTPException(status_code=400,detail='录像名称无效')
         path=clips_dir/name
         if not path.is_file() or path.is_symlink():
             raise HTTPException(status_code=404,detail='录像不存在')
         info=path.stat()
-        key=('timeline',name,info.st_size,info.st_mtime_ns)
+        if not 1 <= parts <= 16 or not 0 <= part < parts:
+            raise HTTPException(status_code=400,detail='时间轴缩放范围无效')
+        key=('timeline',name,info.st_size,info.st_mtime_ns,part,parts)
         etag='"'+hashlib.sha256(repr(key).encode()).hexdigest()[:24]+'"'
         headers={'Cache-Control':'private, no-cache','ETag':etag}
         if request.headers.get('if-none-match')==etag:
@@ -852,7 +854,7 @@ def create_app(
                 try:
                     count=int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
                     for index in range(8):
-                        cap.set(cv2.CAP_PROP_POS_FRAMES,max(0,int(max(0,count-1)*index/7)))
+                        cap.set(cv2.CAP_PROP_POS_FRAMES,max(0,int(max(0,count-1)*(part+index/7)/parts)))
                         ok,frame=cap.read()
                         if not ok:
                             raise HTTPException(status_code=404,detail='无法读取时间轴缩略帧')

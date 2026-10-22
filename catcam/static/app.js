@@ -1272,23 +1272,26 @@ function drinkDraft(name){
   if(!drinkDrafts.has(name)){
     const duration=clipsData.durations[name]||0,meta=clipsData.meta?.[name]||{};
     const seconds=Math.min(duration,meta.effective_drinking_seconds??duration*.8);
-    drinkDrafts.set(name,{segments:meta.drinking_intervals?.map(p=>[...p])||[[(duration-seconds)/2,(duration+seconds)/2]],selected:0,dirty:false,located:!!meta.drinking_intervals});
+    drinkDrafts.set(name,{segments:meta.drinking_intervals?.map(p=>[...p])||[[(duration-seconds)/2,(duration+seconds)/2]],selected:0,dirty:false,zoom:1,located:!!meta.drinking_intervals});
   }
   return drinkDrafts.get(name);
 }
 function drinkVolume(seconds){
-  const c=drinkCalibration||{},rate=c.ml_per_second;
-  if(rate>0)return {value:seconds*rate,note:c.duration_calibration_estimated?'按周期校准估算 · 校准含估算时长':'按本机周期校准估算'};
-  return {value:c.ml_per_drink??null,note:c.calibrated?'仅按每次平均估算 · 尚无每秒校准':'默认每次估值 · 待水量周期校准，暂不随时长变化'};
+  const c=drinkCalibration||{},rate=c.ml_per_second,cycle=c.duration_calibration_cycle;
+  if(rate>0)return {value:seconds*rate,note:`上周期 ${cycle?.consumed_ml??'—'} ml ÷ ${Number(cycle?.drinking_seconds||0).toFixed(1)} 秒 = ${rate.toFixed(3)} ml/秒 × 本段动作秒数${c.duration_calibration_estimated?' · 校准含估算时长':''}`};
+  let note='待完成上一个水量周期后，按总耗水量 ÷ 喝水总秒数校准';
+  if(cycle)note=`上周期耗水 ${cycle.consumed_ml} ml · ${cycle.drinks} 次确认喝水`+(cycle.missing_durations?` · ${cycle.missing_durations} 段缺少时长，暂不计算毫升`:cycle.pending?` · 仍有待判定录像，暂不计算毫升`:' · 待补齐有效周期数据');
+  return {value:null,note};
 }
 function clipClock(seconds){const value=Math.max(0,Math.floor(seconds||0));return Math.floor(value/60)+':'+String(value%60).padStart(2,'0');}
 function drinkTrackMarkup(name){
   const d=drinkDraft(name),duration=clipsData.durations[name]||0,jn=JSON.stringify(name);
   if(!(duration>0))return '<p class="note">录像时长尚不可用</p>';
-  return `<div class="drink-editor" data-drink-editor="${esc(name)}"><div class="drink-player-toolbar"><button class="drink-toggle" aria-label="播放或暂停视频" onclick='toggleDrinkVideo(${jn})'>▶</button><span class="drink-player-clock">00:00 / ${clipClock(duration)}</span><button class="drink-sound" onclick='toggleDrinkSound(${jn},this)' aria-label="切换视频声音">声音 开</button><button onclick='fullscreenDrinkVideo(${jn})' aria-label="全屏视频">⛶</button></div><div class="drink-video-heading"><span>视频轨道</span><small>点击或拖动定位画面</small></div><div class="drink-track-stack"><div class="drink-video-track" aria-label="视频缩略帧轨道"><img loading="lazy" src="/clips/${encodeURIComponent(name)}/timeline.jpg" alt="按时间排列的视频缩略帧" draggable="false"></div><div class="drink-track-heading"><span>喝水动作轨</span><small class="drink-track-state"></small></div><div class="drink-track" aria-label="喝水时间轨"><div class="drink-regions"></div></div><i class="drink-playhead"><span></span></i></div><div class="drink-track-axis"><span>0:00</span><span>${clipClock(duration/4)}</span><span>${clipClock(duration/2)}</span><span>${clipClock(duration*3/4)}</span><span>${clipClock(duration)}</span></div><div class="drink-range-controls"><label>开始 <input data-drink-start type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间开始秒数"></label><label>结束 <input data-drink-end type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间结束秒数"></label><button onclick='addDrinkRange(${jn})'>＋一段</button><button onclick='removeDrinkRange(${jn})'>移除</button></div><div class="drink-track-summary"><span>区间合计 <b data-drink-total></b> 秒</span><span>约 <b data-drink-ml></b> ml</span><button class="btn ghost" onclick='saveDrinkRanges(${jn},this)'>保存区间</button></div><p class="drink-volume-note"></p></div>`;
+  return `<div class="drink-editor" data-drink-editor="${esc(name)}"><div class="drink-player-toolbar"><button class="drink-toggle" aria-label="播放或暂停视频" onclick='toggleDrinkVideo(${jn})'>▶</button><span class="drink-player-clock">00:00 / ${clipClock(duration)}</span><button class="drink-sound" onclick='toggleDrinkSound(${jn},this)' aria-label="切换视频声音">声音 开</button><button onclick='fullscreenDrinkVideo(${jn})' aria-label="全屏视频">⛶</button></div><div class="drink-video-heading"><span>视频轨道</span><div class="drink-zoom"><button onclick='zoomDrinkTimeline(${jn},.5)' aria-label="缩小时间轴">−</button><output>1×</output><button onclick='zoomDrinkTimeline(${jn},2)' aria-label="放大时间轴">＋</button><button onclick='zoomDrinkTimeline(${jn},0)'>适应全片</button></div></div><div class="drink-timeline-scroll" tabindex="0" aria-label="可横向滚动的视频与喝水轨道"><div class="drink-timeline-content"><div class="drink-track-stack"><div class="drink-video-track" aria-label="视频缩略帧轨道"><img loading="lazy" src="/clips/${encodeURIComponent(name)}/timeline.jpg" alt="按时间排列的视频缩略帧" draggable="false"></div><div class="drink-track-heading"><span>喝水动作轨</span><small class="drink-track-state"></small></div><div class="drink-track" aria-label="喝水时间轨"><div class="drink-regions"></div></div><i class="drink-playhead"><span></span></i></div><div class="drink-track-axis"><span>0:00</span><span>${clipClock(duration/4)}</span><span>${clipClock(duration/2)}</span><span>${clipClock(duration*3/4)}</span><span>${clipClock(duration)}</span></div></div></div><div class="drink-range-controls"><label>开始 <input data-drink-start type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间开始秒数"></label><label>结束 <input data-drink-end type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间结束秒数"></label><button onclick='addDrinkRange(${jn})'>＋一段</button><button onclick='removeDrinkRange(${jn})'>移除</button></div><div class="drink-track-summary"><span>区间合计 <b data-drink-total></b> 秒</span><span class="drink-amount">约 <b data-drink-ml></b> ml</span><button class="btn ghost" onclick='saveDrinkRanges(${jn},this)'>保存区间</button></div><p class="drink-volume-note"></p></div>`;
 }
 function updateDrinkTrack(editor){
   const name=editor.dataset.drinkEditor,d=drinkDraft(name),duration=clipsData.durations[name];
+  updateDrinkZoom(editor);
   d.selected=Math.max(0,Math.min(d.selected,d.segments.length-1));
   const merged=[];for(const [start,end] of [...d.segments].sort((a,b)=>a[0]-b[0])){if(merged.length&&start<=merged[merged.length-1][1])merged[merged.length-1][1]=Math.max(end,merged[merged.length-1][1]);else merged.push([start,end]);}
   const seconds=merged.reduce((sum,[start,end])=>sum+end-start,0),volume=drinkVolume(seconds);
@@ -1297,7 +1300,7 @@ function updateDrinkTrack(editor){
   const pair=d.segments[d.selected]||[0,0];
   editor.querySelector('[data-drink-start]').value=pair[0].toFixed(1);editor.querySelector('[data-drink-end]').value=pair[1].toFixed(1);
   editor.querySelector('[data-drink-total]').textContent=seconds.toFixed(1);
-  editor.querySelector('[data-drink-ml]').textContent=volume.value==null?'—':volume.value.toFixed(1);
+  editor.querySelector('.drink-amount').innerHTML=volume.value==null?'<span class="note">饮水量 · 待周期校准</span>':`约 <b data-drink-ml>${volume.value.toFixed(1)}</b> ml`;
   editor.querySelector('.drink-volume-note').textContent=volume.note+'。区间可能重叠，保存时自动合并。水量还受蒸发、泼洒影响。';
 }
 function refreshDrinkTracks(root=document){root.querySelectorAll('[data-drink-editor]').forEach(updateDrinkTrack);}
@@ -1356,3 +1359,21 @@ function toggleDrinkSound(name,button){const video=drinkVideo(name);video.muted=
 function fullscreenDrinkVideo(name){const video=drinkVideo(name);video.requestFullscreen?.();}
 for(const eventName of ['play','pause','ended'])document.addEventListener(eventName,event=>{if(!event.target.matches('#recGrid video'))return;const button=event.target.closest('.clip').querySelector('.drink-toggle');if(button)button.textContent=event.target.paused?'▶':'Ⅱ';},true);
 document.addEventListener('click',event=>{if(event.target.matches('#recGrid video'))toggleDrinkVideo(event.target.closest('.clip').dataset.name);});
+
+function updateDrinkZoom(editor){
+  const name=editor.dataset.drinkEditor,d=drinkDraft(name),zoom=d.zoom||1,duration=clipsData.durations[name],content=editor.querySelector('.drink-timeline-content');
+  if(!content||content.dataset.zoom===String(zoom))return;
+  content.dataset.zoom=zoom;content.style.width=(zoom*100)+'%';
+  const strip=editor.querySelector('.drink-video-track');
+  strip.innerHTML=Array.from({length:zoom},(_,part)=>`<img loading="lazy" src="/clips/${encodeURIComponent(name)}/timeline.jpg?parts=${zoom}&part=${part}" alt="视频第 ${part+1}/${zoom} 区间缩略帧" draggable="false" style="width:${100/zoom}%">`).join('');
+  editor.querySelector('.drink-track-axis').innerHTML=Array.from({length:zoom*4+1},(_,i)=>`<span>${clipClock(duration*i/(zoom*4))}</span>`).join('');
+  editor.querySelector('.drink-zoom output').textContent=zoom+'×';
+  const buttons=editor.querySelectorAll('.drink-zoom button');buttons[0].disabled=zoom===1;buttons[1].disabled=zoom===16;
+}
+function zoomDrinkTimeline(name,factor){
+  const editor=drinkVideo(name)?.closest('.clip').querySelector('[data-drink-editor]');if(!editor)return;
+  const scroll=editor.querySelector('.drink-timeline-scroll'),d=drinkDraft(name),duration=clipsData.durations[name];
+  const old=d.zoom||1,anchor=drinkVideo(name).currentTime||((scroll.scrollLeft+scroll.clientWidth/2)/(scroll.clientWidth*old)*duration);
+  d.zoom=factor===0?1:Math.max(1,Math.min(16,old*factor));updateDrinkZoom(editor);
+  scroll.scrollLeft=factor===0?0:Math.max(0,anchor/duration*scroll.clientWidth*d.zoom-scroll.clientWidth/2);
+}

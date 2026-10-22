@@ -706,3 +706,18 @@ def test_timeline_strip_has_real_frames_and_uses_cache(tmp_path,monkeypatch):
     monkeypatch.setattr(cv2,'VideoCapture',lambda *_:pytest.fail('时间轴缩略帧应使用缓存'))
     assert client.get('/clips/clip_1000.mp4/timeline.jpg').content==response.content
     assert client.get('/clips/clip_1000.mp4/timeline.jpg',headers={'If-None-Match':response.headers['etag']}).status_code==304
+
+
+def test_zoomed_timeline_samples_only_requested_window(tmp_path):
+    import cv2
+    app, _, recorder, _ = _build(tmp_path)
+    recorder.save_clip([np.full((48,64,3),i*10,np.uint8) for i in range(20)],timestamp=1)
+    client=TestClient(app)
+    def pixels(part):
+        response=client.get('/clips/clip_1000.mp4/timeline.jpg',params={'parts':4,'part':part})
+        assert response.status_code==200
+        return cv2.imdecode(np.frombuffer(response.content,np.uint8),cv2.IMREAD_COLOR)
+    first,last=pixels(0),pixels(3)
+    assert first[:,-96:].mean()<last[:,:96].mean()
+    assert client.get('/clips/clip_1000.mp4/timeline.jpg?parts=17').status_code==400
+    assert client.get('/clips/clip_1000.mp4/timeline.jpg?parts=4&part=4').status_code==400

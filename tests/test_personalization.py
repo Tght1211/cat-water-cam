@@ -229,3 +229,32 @@ def test_recheck_water_alert_does_not_block_drinking_confirmation(tmp_path, mode
     assert review.status()['state'] == 'done'
     assert f.get_label('drink.mp4') is True
     assert s.count_between(0, 200) == 1
+
+
+def test_duration_rate_uses_last_cycle_and_all_continuation_clips(tmp_path):
+    db=tmp_path/'db';s=StatsStore(db);f=FeedbackStore(db,tmp_path/'training');d=DispenserStore(db)
+    d.refill(100,100)
+    s.record_event(200,'first.mp4');f.label_clip(tmp_path/'first.mp4',True);f.set_duration('first.mp4',10)
+    d.finish_cycle(300)
+    assert d.calibration(s)['ml_per_second']==10
+    d.refill(120,400)
+    for ts,name,seconds in [(500,'a.mp4',10),(520,'b.mp4',20)]:
+        s.record_event(ts,name);s.record_event(ts+1,name)
+        f.label_clip(tmp_path/name,True);f.set_duration(name,seconds)
+    d.finish_cycle(600)
+    report=d.calibration(s)
+    assert report['duration_calibration_cycle']['drinks']==1
+    assert report['duration_calibration_cycle']['drinking_seconds']==30
+    assert report['ml_per_second']==4  # 120/30，不能池化旧周期，也不能丢弃合并访问的后续片段。
+
+
+def test_duration_rate_never_divides_by_incomplete_seconds(tmp_path):
+    db=tmp_path/'db';s=StatsStore(db);f=FeedbackStore(db,tmp_path/'training');d=DispenserStore(db)
+    d.refill(100,100)
+    for ts,name in [(200,'a.mp4'),(300,'b.mp4')]:
+        s.record_event(ts,name);f.label_clip(tmp_path/name,True)
+    f.set_duration('a.mp4',10)
+    d.finish_cycle(400)
+    report=d.calibration(s)
+    assert report['ml_per_second'] is None
+    assert report['duration_calibration_cycle']['missing_durations']==1

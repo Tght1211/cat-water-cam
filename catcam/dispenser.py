@@ -188,32 +188,44 @@ class DispenserStore:
         """按最新人工/机器纠错标签重新计数，历史校准随纠错同步更新。"""
         with self._conn() as c:
             cycles = c.execute('SELECT id,start,end,consumed_ml,baseline_known,remaining_ml,stopped_confirmed FROM water_cycles ORDER BY id').fetchall()
-        total_ml,total_drinks,total_seconds,seconds_ml = 0,0,0,0
-        estimated_seconds_used=False
+        total_ml,total_drinks = 0,0
+        latest = None
         report=[]
         with stats._conn() as c:
             cols={r[1] for r in c.execute('PRAGMA table_info(labels)')}
+            has_durations=c.execute("SELECT 1 FROM sqlite_master WHERE name='clip_durations'").fetchone()
             for ident,start,end,ml,known,residual,stopped in cycles:
                 events=stats.events_between(start,end)
                 pending=c.execute('SELECT COUNT(*) FROM events e LEFT JOIN labels l ON e.clip_name=l.clip_name WHERE e.ts>=? AND e.ts<? AND l.clip_name IS NULL',(start,end)).fetchone()[0]
                 count=len(events)
                 complete=count > 0 and pending==0 and bool(known)
-                report.append({'id':ident,'start':start,'end':end,'consumed_ml':ml,'drinks':count,'pending':pending,'used':complete,'baseline_known':bool(known),'remaining_ml':residual,'stopped_confirmed':bool(stopped)})
+                # 相邻录像虽合并为一次访问，动作秒数仍需包含全部确认片段；同一录像多次事件只计一次。
+                if 'drinking_seconds' in cols:
+                    seconds_column='l.drinking_seconds'
+                else:
+                    seconds_column='NULL'
+                video_column='d.video_seconds' if has_durations else 'NULL'
+                join='LEFT JOIN clip_durations d ON l.clip_name=d.clip_name' if has_durations else ''
+                rows=c.execute(f"SELECT {seconds_column},{video_column} FROM labels l JOIN "
+                               "(SELECT clip_name,MIN(ts) ts FROM events GROUP BY clip_name) e ON l.clip_name=e.clip_name "
+                               f"{join} WHERE l.is_drinking=1 AND e.ts>=? AND e.ts<?",(start,end)).fetchall()
+                durations=[actual if actual is not None else round(video*.8,1) if video else None for actual,video in rows]
+                missing=sum(value is None or value<=0 for value in durations)
+                total_seconds=sum(value for value in durations if value is not None and value>0)
+                latest={'id':ident,'start':start,'end':end,'consumed_ml':ml,'drinks':count,
+                        'clips':len(rows),'drinking_seconds':total_seconds,'missing_durations':missing,
+                        'pending':pending,'ready':complete and bool(rows) and missing==0,
+                        'estimated_seconds_used':any(actual is None for actual,video in rows)}
+                report.append({'id':ident,'start':start,'end':end,'consumed_ml':ml,'drinks':count,'pending':pending,'used':complete,'baseline_known':bool(known),'remaining_ml':residual,'stopped_confirmed':bool(stopped),
+                               'drinking_seconds':total_seconds,'missing_durations':missing,'duration_ready':latest['ready']})
                 if complete:
                     total_ml+=ml;total_drinks+=count
-                    if 'drinking_seconds' in cols:
-                        has_durations=c.execute("SELECT 1 FROM sqlite_master WHERE name='clip_durations'").fetchone()
-                        rows=[c.execute('SELECT l.drinking_seconds,d.video_seconds FROM labels l LEFT JOIN clip_durations d ON l.clip_name=d.clip_name WHERE l.clip_name=?',(e['clip_name'],)).fetchone()
-                              if has_durations else (c.execute('SELECT drinking_seconds FROM labels WHERE clip_name=?',(e['clip_name'],)).fetchone()[0],None) for e in events]
-                        durations=[actual if actual is not None else round(video*.8,1) if video else None for actual,video in rows]
-                        if all(v is not None and v > 0 for v in durations):
-                            total_seconds+=sum(durations);seconds_ml+=ml
-                            estimated_seconds_used|=any(actual is None for actual,video in rows)
         manual=self.get_state()
         total_ml+=manual['calib_sum_ml'];total_drinks+=manual['calib_drinks']
         return {'ml_per_drink':total_ml/total_drinks if total_drinks else self.default_ml_per_drink,
-                'ml_per_second':seconds_ml/total_seconds if total_seconds else None,
-                'duration_calibration_estimated':estimated_seconds_used,
+                'ml_per_second':latest['consumed_ml']/latest['drinking_seconds'] if latest and latest['ready'] else None,
+                'duration_calibration_estimated':bool(latest and latest['estimated_seconds_used']),
+                'duration_calibration_cycle':latest,
                 'calibrated':total_drinks > 0,'calibration_drinks':total_drinks,'cycles':report,
                 'assumption':'按本轮水量下降估计，未填写的蒸发、泼洒及其他宠物饮水会计入估值。'}
 
