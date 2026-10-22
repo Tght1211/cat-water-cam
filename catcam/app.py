@@ -282,7 +282,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
     flow = FlowMonitor(Path(cfg.data_dir) / "dispenser_flow")
 
     def flow_calibrate(kind):
-        return flow.calibrate_live(kind, latest.get_state(),
+        return flow.calibrate_video(kind, latest.get_state(),
                                    outlet_occlusion.get(flow.roi, time.time()))
 
     dispenser = DispenserStore(

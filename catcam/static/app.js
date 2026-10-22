@@ -1148,18 +1148,18 @@ function renderFlow(f){
   const alert=$('#flowAlert'),panel=$('#flowPanel');
   if(!f){alert.hidden=true;panel.textContent='出水监测未启用';return;}
   const recovery=f.recovery;
-  const needsCalibration=!f.has_stopped_reference||!f.has_flowing_reference;
+  const needsCalibration=!f.has_stopped_video||!f.has_flowing_video;
   alert.hidden=!f.alert&&!recovery&&!needsCalibration;
   alert.classList.toggle('recovered',!f.alert&&!needsCalibration);
   if(f.alert)alert.innerHTML=`<div><strong>疑似停止出水</strong><p>${esc(f.state==='suspected_stopped'?(f.cause_message||f.message):'上次检测到停水，正在观察恢复情况。')}</p></div><button class="btn ghost" onclick="go('disp')">检查饮水机</button>`;
   else if(recovery)alert.innerHTML=`<div class="recovery-scroll"><strong>出水已恢复</strong><span>${waterDate(recovery.start)} 至 ${waterDate(recovery.end)} 检测到停水 · ${waterDate(recovery.end)} 已恢复 · 今日累计停水 ${waterDuration(f.today_downtime_seconds||0)}</span></div><button class="recovery-dismiss" aria-label="关闭恢复提醒" onclick='dismissFlowRecovery(${JSON.stringify(recovery.id)})'>×</button>`;
-  else if(needsCalibration)alert.innerHTML=`<div><strong>出水监测尚未完成校准</strong><p>还需保存${[!f.has_stopped_reference?'停止出水':'',!f.has_flowing_reference?'正常出水':''].filter(Boolean).join('和')}画面，才能完整判断停止与恢复。</p></div><button class="btn ghost" onclick="go('disp')">设置出水监测</button>`;
+  else if(needsCalibration)alert.innerHTML=`<div><strong>出水监测尚未完成校准</strong><p>还需保存${[!f.has_stopped_video?'停止出水':'',!f.has_flowing_video?'正常出水':''].filter(Boolean).join('和')}参考视频，才能完整判断停止与恢复。</p></div><button class="btn ghost" onclick="go('disp')">设置出水监测</button>`;
   const names={suspected_stopped:'疑似停止出水',flowing:'正在正常出水',unknown:'出水状态待确认',learning:'正在持续观察',unconfigured:'尚未设置出水监测'};
   const calibrationOpen=needsCalibration||panel.querySelector('.flow-calibration')?.open;
   const observation=f.observation;
-  const referenceHint=!observation||Date.now()/1000-observation.observed_at>3?'正在等待出水口的最新画面。':!observation.usable?'框选区域光线或细节不足，请检查区域或补光。':observation.occluded?'检测到猫咪遮挡框选出水口，请等猫咪离开后保存。':'出水口画质正常，当前未检测到猫咪遮挡，可保存参考。';
+  const referenceHint=!observation||Date.now()/1000-observation.observed_at>3?'正在等待出水口的最新画面。':!observation.usable?'框选区域光线或细节不足，请检查区域或补光。':observation.occluded?'检测到猫咪遮挡框选出水口，请等猫咪离开后保存。':(f.video_buffer_frames||0)<50?`正在积累连续视频（${f.video_buffer_frames||0}/50 帧），请保持当前状态约 6 秒。`:'出水口视频已就绪，当前未检测到猫咪遮挡，可保存参考。';
   panel.innerHTML=`<div class="flow-heading"><div><span class="flow-eyebrow">实时出水监测</span><h3>${esc(names[f.state]||names.unknown)}</h3></div><span class="tag ${f.alert?'bad':f.state==='flowing'?'ok':''}">${f.alert?'请检查':f.state==='flowing'?'出水正常':'观察中'}</span></div><p class="flow-description">${esc(f.alert?(f.cause_message||f.message):f.message)}</p>
-    <details class="flow-calibration" ${calibrationOpen?'open':''}><summary>设置与校准出水画面 <span>停止参考${f.has_stopped_reference?'已保存':'未保存'} · 正常参考${f.has_flowing_reference?'已保存':'未保存'}</span></summary><p>框选出水口，关机后保存停止画面，再开机保存正常画面。之后会连续多帧观察停止与恢复。疑似停水仅提醒检查设备，不影响喝水确认和记录。</p><p>${esc(referenceHint)}</p><div class="flow-actions"><button class="btn ghost" onclick="openSceneSetup('flow')">框选出水口</button><button class="btn ghost" onclick="captureFlowReference('stopped')">保存停止画面</button><button class="btn" onclick="captureFlowReference('flowing')">保存正常出水画面</button></div></details>`;
+    <details class="flow-calibration" ${calibrationOpen?'open':''}><summary>设置与校准出水画面 <span>停止视频${f.has_stopped_video?'已保存':'未保存'} · 正常视频${f.has_flowing_video?'已保存':'未保存'}</span></summary><p>框选出水口，关机后保持约 6 秒，保存停止参考视频；再开机保持约 6 秒，保存正常出水参考视频。系统比较连续视频里的水流变化，再持续确认停止与恢复。疑似停水仅提醒检查设备，不影响喝水确认和记录。</p><p>${esc(referenceHint)}</p><div class="flow-actions"><button class="btn ghost" onclick="openSceneSetup('flow')">框选出水口</button><button class="btn ghost" onclick="captureFlowReference('stopped')">保存停止参考视频</button><button class="btn" onclick="captureFlowReference('flowing')">保存正常出水参考视频</button>${f.has_stopped_video?'<a class="btn ghost" href="/api/dispenser/flow/reference/stopped.mp4" target="_blank" rel="noopener">查看停止视频</a>':''}${f.has_flowing_video?'<a class="btn ghost" href="/api/dispenser/flow/reference/flowing.mp4" target="_blank" rel="noopener">查看出水视频</a>':''}</div></details>`;
   renderDispenserRecords(dispData);
 }
 async function dismissFlowRecovery(id){
@@ -1168,7 +1168,7 @@ async function dismissFlowRecovery(id){
 }
 async function captureFlowReference(kind){
   const r=await fetch('/api/dispenser/flow/reference',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind})});const d=await r.json();
-  if(!r.ok){toast(d.detail,'err');return;}loadDispenser();toast('当前画面已保存为'+(kind==='stopped'?'停止出水':'正常出水')+'参考');
+  if(!r.ok){toast(d.detail,'err');return;}loadDispenser();toast('最近约 6 秒已保存为'+(kind==='stopped'?'停止出水':'正常出水')+'参考视频');
 }
 
 async function openMailSetup(){

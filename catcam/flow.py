@@ -12,6 +12,7 @@ import numpy as np
 
 from catcam.nightvision import assess_quality
 from catcam.geometry import cat_overlaps_bowl, ratio_rect_to_pixels
+from catcam.recorder import open_writer
 
 
 class OutletOcclusion:
@@ -45,12 +46,20 @@ class FlowMonitor:
         if metadata.exists():
             self.roi = tuple(json.loads(metadata.read_text())['roi'])
         self.refs = {}
+        self.temporal_refs = {}
+        self._clip_frames = deque(maxlen=90)
         for kind in ('stopped', 'flowing'):
             frame = cv2.imread(str(self.directory / f'{kind}.jpg')) if (self.directory / f'{kind}.jpg').exists() else None
             if frame is not None:
                 self.refs[kind] = self._feature(frame)
+        for kind in ('stopped', 'flowing'):
+            path = self.directory / f'{kind}.npz'
+            if path.exists() and (self.directory / f'{kind}.mp4').exists():
+                with np.load(path, allow_pickle=False) as reference:
+                    self.refs[kind] = reference['appearance']
+                    self.temporal_refs[kind] = reference['variation']
         self.previous = None
-        self._motion_window = deque(maxlen=5)
+        self._motion_window = deque(maxlen=12)
         self.last_seen = 0
         self.pending = None
         self.pending_samples = 0
@@ -179,8 +188,95 @@ class FlowMonitor:
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = self.roi
         crop = frame[int(y1*h):int(y2*h), int(x1*w):int(x2*w)]
+        return self._crop_feature(crop)
+
+    @staticmethod
+    def _crop_feature(crop):
         gray = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (64, 48)).astype(np.float32)/255
         return gray - gray.mean()
+
+    def _buffer_video(self, now, frame, usable, occluded):
+        """缓存真实连续画面（约 10 fps / 6 秒），不以重复截图拼成视频。"""
+        if self._clip_frames and now-self._clip_frames[-1][0] < .075:
+            return
+        if not usable or occluded or not assess_quality(frame, self.roi, 50)['usable']:
+            self._clip_frames.clear()
+            return
+        if self._clip_frames and now-self._clip_frames[-1][0] > .4:
+            self._clip_frames.clear()
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = self.roi
+        crop = frame[int(y1*h):int(y2*h), int(x1*w):int(x2*w)]
+        ch, cw = crop.shape[:2]
+        scale = min(1, 320/max(ch, cw))
+        size = (max(2, int(cw*scale)//2*2), max(2, int(ch*scale)//2*2))
+        crop = cv2.resize(crop, size)
+        if self._clip_frames and self._clip_frames[-1][1].shape != crop.shape:
+            self._clip_frames.clear()
+        self._clip_frames.append((now, crop))
+        while self._clip_frames and now-self._clip_frames[0][0] > 6.1:
+            self._clip_frames.popleft()
+
+    def calibrate_video(self, kind, state, occluded=False, now=None):
+        """保存最近约 6 秒的原始局部视频，并学习空间外观和时间变化。"""
+        if kind not in ('stopped', 'flowing'):
+            raise ValueError('请选择停止出水或正在出水')
+        self._validate_live(state, occluded, now)
+        now = time.time() if now is None else now
+        with self.lock:
+            frames = list(self._clip_frames)
+            if len(frames) < 50 or frames[-1][0]-frames[0][0] < 5 or now-frames[-1][0] > .5:
+                raise ValueError('请保持出水口无遮挡、状态稳定约 6 秒，再保存参考视频；断流或遮挡后需重新等待')
+            sequence = np.stack([self._crop_feature(crop) for _, crop in frames])
+            appearance, variation = np.mean(sequence, axis=0), np.std(sequence, axis=0)
+            temporary = self.directory / f'{kind}.part.mp4'
+            fps = (len(frames)-1)/(frames[-1][0]-frames[0][0])
+            writer = open_writer(temporary, fps, (frames[0][1].shape[1], frames[0][1].shape[0]))
+            try:
+                for _, crop in frames:
+                    writer.write(crop)
+            finally:
+                writer.release()
+            temporary.replace(self.directory / f'{kind}.mp4')
+            cache = self.directory / f'{kind}.npz.tmp'
+            with cache.open('wb') as output:
+                np.savez(output, appearance=appearance, variation=variation)
+            cache.replace(self.directory / f'{kind}.npz')
+            settings = self.directory / 'settings.tmp'
+            settings.write_text(json.dumps({'roi': self.roi}))
+            settings.replace(self.directory / 'settings.json')
+            self.refs[kind], self.temporal_refs[kind] = appearance, variation
+            self.pending = None
+            self.previous = None
+            self._motion_window.clear()
+            self._state('learning', now)
+            return self.status(now)
+
+
+    def learn_video(self, kind, path):
+        """从用户确认的完整参考录像学习，供历史录像导入；不改喝水动作标签。"""
+        cap = cv2.VideoCapture(str(path))
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            if not math.isfinite(fps) or fps <= 0 or not 5 <= count/fps <= 12:
+                raise ValueError('请提供约 6 秒、包含连续画面的参考视频')
+            with self.lock:
+                self._clip_frames.clear()
+                base = time.time()-count/fps
+                last = None
+                for i in range(min(int(count)+1, 1000)):
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    stamp = base+i/fps
+                    self._buffer_video(stamp, frame, True, False)
+                    last = (stamp, frame, False)
+                if last is None:
+                    raise ValueError('参考视频无法解码')
+                return self.calibrate_video(kind, last, now=last[0])
+        finally:
+            cap.release()
 
     @staticmethod
     def _distance(feature, reference):
@@ -203,8 +299,7 @@ class FlowMonitor:
             with (self.directory / 'transitions.jsonl').open('a') as log:
                 log.write(json.dumps({'ts': now, 'state': state, 'alert': self.alert, 'fault_since':self.fault_since})+'\n')
 
-    def calibrate_live(self, kind, state, occluded=False, now=None):
-        """校准使用最新原始画面，并分别说明时效、局部画质和遮挡问题。"""
+    def _validate_live(self, state, occluded=False, now=None):
         if state is None:
             raise ValueError('摄像头尚未提供画面，请稍后重试')
         now = time.time() if now is None else now
@@ -214,7 +309,13 @@ class FlowMonitor:
         quality = assess_quality(frame, self.roi, 50)
         if not quality['usable']:
             raise ValueError(f"框选出水口画质不足（亮度 {quality['brightness']}，细节对比 {quality['contrast']}），请检查框选区域或补光")
-        return self.calibrate(kind, frame, occluded=occluded)
+        if occluded:
+            raise ValueError('检测到猫咪遮挡框选的出水口，请等猫咪离开后重试')
+
+    def calibrate_live(self, kind, state, occluded=False, now=None):
+        """兼容旧的单图参考导入；网页使用 calibrate_video。"""
+        self._validate_live(state, occluded, now)
+        return self.calibrate(kind, state[1], occluded=occluded)
 
     def calibrate(self, kind, frame, usable=True, occluded=False):
         if kind not in ('stopped', 'flowing'):
@@ -254,8 +355,11 @@ class FlowMonitor:
             temp.write_text(json.dumps({'roi': roi}))
             temp.replace(self.directory / 'settings.json')
             for kind in ('stopped', 'flowing'):
-                (self.directory / f'{kind}.jpg').unlink(missing_ok=True)
+                for suffix in ('jpg', 'mp4', 'npz'):
+                    (self.directory / f'{kind}.{suffix}').unlink(missing_ok=True)
             self.refs.clear()
+            self.temporal_refs.clear()
+            self._clip_frames.clear()
             self.observation = None
             self.previous = None
             self._motion_window.clear()
@@ -267,6 +371,7 @@ class FlowMonitor:
 
     def observe(self, now, frame, usable, occluded=False):
         with self.lock:
+            self._buffer_video(now, frame, usable, occluded)
             if now-self.last_seen < .5:
                 return
             gap = now-self.last_seen
@@ -286,7 +391,7 @@ class FlowMonitor:
             else:
                 self._evidence_frames.clear()
             # 未校准是明确的配置状态，不能被运动或遮挡掩盖成含糊的「未知」。
-            if len(self.refs) < 2:
+            if len(self.refs) < 2 or self.temporal_refs and len(self.temporal_refs) < 2:
                 self.pending = None
                 self.pending_samples = 0
                 self._state('unconfigured', now)
@@ -304,13 +409,27 @@ class FlowMonitor:
             # 比较整段窗口与其中位画面，避免只看相邻帧漏掉缓慢/周期性水流。
             sequence = np.stack(self._motion_window)
             temporal_change = float(np.max(np.mean(np.abs(sequence-np.median(sequence, axis=0)), axis=(1, 2))))
-            distances = {k: self._distance(feature,v) for k, v in self.refs.items()}
+            video_ready = len(self.temporal_refs) == 2
+            if video_ready and len(sequence) < 12:
+                self.pending = None
+                self._state('learning', now)
+                return
+            if video_ready and len(self._clip_frames) >= 50:
+                sequence = np.stack([self._crop_feature(crop) for _, crop in self._clip_frames])
+            appearance = np.mean(sequence, axis=0) if video_ready else feature
+            variation = np.std(sequence, axis=0)
+            distances = {k: self._distance(appearance, v) for k, v in self.refs.items()}
+            if video_ready:
+                for kind in distances:
+                    distances[kind] += float(np.mean(np.abs(variation-self.temporal_refs[kind])))
             self.distance = distances.get('stopped')
             target = None
             stopped = distances.get('stopped', 1)
             flowing = distances.get('flowing', 1)
             # Overlapping references cannot distinguish a stopped pump from a running one.
             separation = float(np.mean(np.abs(self.refs['stopped']-self.refs['flowing']))) if len(self.refs)==2 else 1
+            if video_ready:
+                separation += float(np.mean(np.abs(self.temporal_refs['stopped']-self.temporal_refs['flowing'])))
             margin = max(.003, separation*.2)
             if stopped < .035 and flowing-stopped > margin and motion is not None and motion < .012 and temporal_change < .012:
                 target = 'suspected_stopped'
@@ -333,24 +452,27 @@ class FlowMonitor:
     def status(self, now=None):
         with self.lock:
             now = time.time() if now is None else now
-            state = ('unconfigured' if len(self.refs) < 2 else
+            state = ('unconfigured' if len(self.refs) < 2 or self.temporal_refs and len(self.temporal_refs) < 2 else
                      'unknown' if self.last_seen and now-self.last_seen > 5 else self.state)
             messages = {'suspected_stopped': '画面与停止出水参考相符，请检查蓄水、供电和水泵。',
-                        'flowing': '画面与您确认的正常出水参考相符。',
+                        'flowing': '连续画面与您确认的正常出水参考相符。',
                         'unknown': '暂无法判断：可能遮挡、光线不足、画面变化或摄像头离线。',
                         'learning': f'正在连续比对出水口，需至少 {self.dwell:g} 秒、{max(3, math.ceil(self.dwell*1.5))} 帧一致证据；出水状态不影响喝水记录。',
-                        'unconfigured': '尚未校准，不能自动判断停水。请框选出水口，分别保存停止和正常出水画面。'}
+                        'unconfigured': '尚未校准，不能自动判断停水。请框选出水口，分别保存停止和正常出水参考视频（保持对应状态约 6 秒后保存）。'}
+            references = self.temporal_refs if self.temporal_refs else self.refs
             missing = [label for kind, label in (('stopped', '停止出水'), ('flowing', '正常出水'))
-                       if kind not in self.refs]
+                       if kind not in references]
             today = datetime.fromtimestamp(now).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
             downtime = sum(max(0,min(now,row['end'] or now)-max(today,row['start'])) for row in self.incidents)
             recovery = next((row.copy() for row in reversed(self.incidents) if row['end'] is not None and not row['dismissed']),None)
             return {'incidents':list(reversed(self.incidents[-30:])), 'recovery':recovery, 'today_downtime_seconds':round(downtime), 'state': state, 'alert': self.alert, 'message': messages[state],
                     'observation': self.observation,
                     'calibration_complete': not missing, 'missing_references': missing,
+                    'has_stopped_video': 'stopped' in self.temporal_refs, 'has_flowing_video': 'flowing' in self.temporal_refs,
+                    'video_reference_seconds': 6, 'video_buffer_frames': len(self._clip_frames),
                     'roi': self.roi, 'has_stopped_reference': 'stopped' in self.refs,
                     'has_flowing_reference': 'flowing' in self.refs,
                     'last_observed_at': self.last_seen, 'changed_at': self.changed_at, 'fault_since':self.fault_since,
                     'confirmation_seconds': self.dwell, 'confirmation_frames': max(3, math.ceil(self.dwell*1.5)),
                     'pending_samples': self.pending_samples if self.pending else 0,
-                    'method': 'local_reference_sequence', 'stopped_distance': self.distance}
+                    'method': 'local_video_sequence' if self.temporal_refs else 'local_reference_sequence', 'stopped_distance': self.distance}

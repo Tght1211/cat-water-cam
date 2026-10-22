@@ -444,6 +444,17 @@ def create_app(
             return flow_calibrate(body.get('kind'))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except (OSError, RuntimeError, cv2.error):
+            raise HTTPException(status_code=500, detail='参考视频保存失败，请检查磁盘空间和本地视频编码支持')
+
+    @app.get('/api/dispenser/flow/reference/{kind}.mp4')
+    def dispenser_flow_video(kind: Literal['stopped', 'flowing']):
+        if flow_monitor is None:
+            raise HTTPException(status_code=404, detail='未启用出水监测')
+        path = flow_monitor.directory / f'{kind}.mp4'
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail='尚未保存该状态的参考视频')
+        return FileResponse(path, media_type='video/mp4')
 
     @app.post('/api/dispenser/flow/roi')
     def dispenser_flow_roi(body: dict = Body(default={})):

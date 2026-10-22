@@ -285,3 +285,82 @@ def test_flow_observation_explains_local_quality_and_occlusion(tmp_path):
     assert observation['usable'] and not observation['occluded']
     m.observe(101, image(), True, occluded=True)
     assert m.status(101)['observation']['occluded']
+
+
+def test_video_reference_requires_continuous_real_frames_and_persists(tmp_path):
+    m = FlowMonitor(tmp_path, roi=(.1,.1,.9,.9))
+    frame = image()
+    with pytest.raises(ValueError, match='6 秒'):
+        m.calibrate_video('flowing', (100, frame, False), now=100)
+    for i in range(61):
+        m.observe(100+i*.1, frame, True)
+    result = m.calibrate_video('flowing', (106, frame, False), now=106)
+    assert result['has_flowing_video']
+    assert result['method'] == 'local_video_sequence'
+    assert (tmp_path/'flowing.mp4').exists()
+    cap = cv2.VideoCapture(str(tmp_path/'flowing.mp4'))
+    try:
+        assert cap.get(cv2.CAP_PROP_FRAME_COUNT) >= 50
+        assert 9 < cap.get(cv2.CAP_PROP_FPS) < 11
+    finally:
+        cap.release()
+    restored = FlowMonitor(tmp_path)
+    assert restored.status()['has_flowing_video']
+    assert np.allclose(restored.temporal_refs['flowing'], m.temporal_refs['flowing'])
+    restored.set_roi((.2,.2,.8,.8))
+    assert not (tmp_path/'flowing.mp4').exists()
+    assert not restored.temporal_refs
+
+
+def test_video_reference_cannot_bridge_occlusion_or_stream_gap(tmp_path):
+    m = FlowMonitor(tmp_path)
+    frame = image()
+    for i in range(61):
+        m.observe(100+i*.1, frame, True)
+    m.observe(106.1, frame, True, occluded=True)
+    m.observe(106.2, frame, True)
+    with pytest.raises(ValueError, match='6 秒'):
+        m.calibrate_video('stopped', (106.2, frame, False), now=106.2)
+    for i in range(61):
+        m.observe(110+i*.1, frame, True)
+    m.observe(120, frame, True)
+    with pytest.raises(ValueError, match='6 秒'):
+        m.calibrate_video('stopped', (120, frame, False), now=120)
+
+
+def test_video_motion_distinguishes_same_average_appearance(tmp_path):
+    m = FlowMonitor(tmp_path, dwell=1)
+    frame = image()
+    for i in range(61):
+        m.observe(100+i*.1, frame, True)
+    m.calibrate_video('stopped', (106, frame, False), now=106)
+    def flowing(i):
+        current = frame.astype(np.int16)
+        current[:,:80] += 35 if i%2 else -35
+        return np.clip(current, 0, 255).astype(np.uint8)
+    # 交替明暗模拟持续水流：中位外观接近静态参考，时间变化不同。
+    for i in range(61):
+        m.observe(110+i*.1, flowing(i), True)
+    m.calibrate_video('flowing', (116, flowing(60), False), now=116)
+    assert float(m.temporal_refs['flowing'].mean()) > .02
+    for i in range(50):
+        m.observe(120+i*.5, flowing(i), True)
+    assert m.status(144.5)['state'] == 'flowing'
+    assert not m.alert
+    for i in range(50):
+        m.observe(150+i*.5, frame, True)
+    assert m.status(174.5)['state'] == 'suspected_stopped'
+    assert m.alert
+
+
+def test_import_confirmed_video_learns_separate_flow_model(tmp_path):
+    frame = image()
+    original = FlowMonitor(tmp_path/'original')
+    for i in range(61):
+        original.observe(100+i*.1, frame, True)
+    original.calibrate_video('stopped', (106, frame, False), now=106)
+    target = FlowMonitor(tmp_path/'imported')
+    result = target.learn_video('stopped', tmp_path/'original'/'stopped.mp4')
+    assert result['has_stopped_video']
+    assert (tmp_path/'imported'/'stopped.npz').exists()
+    assert not result['has_flowing_video']
