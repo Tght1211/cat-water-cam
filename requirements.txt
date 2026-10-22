@@ -10,5 +10,3 @@ filelock>=3.12
 
 websockets>=15,<17
 safetensors>=0.4
-
-openai-codex==0.163.0

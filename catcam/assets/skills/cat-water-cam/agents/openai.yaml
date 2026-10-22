@@ -1,0 +1,4 @@
+interface:
+  display_name: "猫咪饮水素材助手"
+  short_description: "读取本机猫咪饮水视频，生成喝水动作轨草稿并准备微调素材"
+  default_prompt: "使用 $cat-water-cam 检查本机饮水视频，提交喝水区间建议供我复核。"

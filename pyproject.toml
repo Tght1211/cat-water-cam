@@ -8,13 +8,14 @@ version = "0.2.0"
 requires-python = ">=3.10"
 
 [project.optional-dependencies]
+codex = ["openai-codex==0.163.0"]
 videomae = ["transformers>=4.40,<5", "safetensors>=0.4"]
 
 [tool.setuptools.packages.find]
 include = ["catcam*"]
 
 [tool.setuptools.package-data]
-catcam = ["assets/*.npz", "assets/*.zip", "static/*.html", "static/*.css", "static/*.js"]
+catcam = ["assets/*.npz", "assets/*.zip", "static/*.html", "static/*.css", "static/*.js", "assets/skills/*/SKILL.md", "assets/skills/*/scripts/*.py", "assets/skills/*/references/*.md", "assets/skills/*/agents/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

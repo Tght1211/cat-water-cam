@@ -297,10 +297,18 @@ WoSee 回放至少应配置 `retention_seconds=86400`，并按实际每天录像
 
 ### Codex SDK 视频标注 Agent
 
-已接入官方 Python `openai-codex==0.163.0`（随依赖安装固定版本 runtime；也可复用本机兼容的 Codex CLI）。在“专属模型 → 模型训练 → Codex 素材标注 Agent”配置第三方 Base URL、API Key、模型名和每日窗口预算。服务需要 **Responses API 与图像输入**；只有 Chat Completions 接口不足以运行 Codex SDK。密钥保存在已忽略的本机配置中，接口不回传密钥。
+可选安装官方 Python `openai-codex==0.163.0`：`.venv/bin/pip install -e ".[codex]"`（安装固定版本 runtime；也可复用本机兼容的 Codex CLI）。素材 Skill 不需要此依赖。在“专属模型 → 模型训练 → Codex 素材标注 Agent”配置第三方 Base URL、API Key、模型名和每日窗口预算。服务需要 **Responses API 与图像输入**；只有 Chat Completions 接口不足以运行 Codex SDK。密钥保存在已忽略的本机配置中，接口不回传密钥。
 
 “保存并测试 SDK / 视觉”仅发送本机生成的红方块/蓝圆测试图。单段录像下方可“Agent 预标全片”，任务页可批量选择最多 10 段、每段最多 30 分钟；点击发送后才上传抽帧。每 30 秒一窗、每秒 2 帧，每窗一次 SDK 任务并计入项目共用调用预算；上游可能有额外 token/账户限制。后台任务可查看进度；重启标为中断，不自动重发或收费。
 
 Agent 使用独立临时工作目录、只读沙箱、禁用命令/写文件/网页搜索，仅返回建议的喝水区间与不确定区间。不覆盖已保存标注、不自动启用模型、不自动训练。建议须先导入草稿、看视频检查，再保存为人工区间。已有整段分类训练继续使用人工确认的类别；区间数据已保存供后续动作时长模型训练，当前并未把整段分类器伪称为区间定位模型。尚未提供第三方配置时，外部推理效果不能验证。
 
 官方文档：https://learn.chatgpt.com/docs/codex-sdk
+
+### 推荐：给现有 Agent 安装喝水轨 Skill
+
+“专属模型 → 模型训练 → 安装素材 Skill”下载通用文件夹；仓库源文件位于 `catcam/assets/skills/cat-water-cam/`。把文件夹安装到 Agent 的技能目录（Codex 为 `~/.codex/skills/`）；其他 Agent 需支持读取 Skill、运行 Python 3.10+/ffmpeg 和查看图片。也可从 `GET /api/materials/skill.zip` 下载。不需要在项目里配置 Agent 模型、第三方密钥或安装 Codex SDK。
+
+Skill **仅处理已确认喝水的视频**：分页列表、获取元信息、分窗连续抽帧、按原视频相对秒数提交动作区间建议。`scripts/catcam_materials.py` 的 `list/info/prepare/propose/proposals/calibration` 命令自带说明；未确认/没喝/后来被驳回的视频不能读取或提交。素材指纹变化也须重新分析。建议保存在独立表中，相同提交自动去重；未查看的时间范围保留为未知。不会修改分类标签、人工区间或启动训练。
+
+“素材任务”查看外部 Agent 提交的建议，检查后导入草稿并人工保存。Skill 自己不调用外部 API，图像是否传给服务取决于你使用的 Agent及授权范围。访问密码通过 `CATCAM_PASSWORD` 环境变量提供，不能写入 Skill 或命令行。

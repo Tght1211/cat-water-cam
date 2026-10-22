@@ -244,6 +244,38 @@ def create_app(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+    from catcam.materials import MaterialWorkspace, skill_archive
+    material_workspace=MaterialWorkspace(feedback,clips_dir)
+
+    @app.get('/api/materials/skill.zip')
+    def materials_skill_download():
+        return Response(skill_archive(),media_type='application/zip',headers={
+            'Content-Disposition':'attachment; filename="cat-water-cam-skill.zip"'})
+
+    @app.get('/api/materials')
+    def confirmed_materials(limit: int = Query(default=12,ge=1,le=100),cursor: str | None = None):
+        return material_workspace.confirmed(recorder,limit,cursor)
+
+    @app.get('/api/materials/proposals')
+    def material_proposals():
+        return {'jobs':material_workspace.jobs()}
+
+    @app.post('/api/materials/proposals')
+    async def submit_material_proposal(request: Request):
+        raw=await request.body()
+        if len(raw)>128*1024:raise HTTPException(status_code=413,detail='建议数据超过限制')
+        try:
+            body=json.loads(raw)
+            if not isinstance(body,dict):raise ValueError('建议必须为对象')
+            return material_workspace.propose(body)
+        except (ValueError,TypeError) as error:
+            raise HTTPException(status_code=400,detail=str(error))
+
+    @app.get('/api/materials/{name}')
+    def confirmed_material(name: str):
+        try:return material_workspace.metadata(name)
+        except ValueError as error:raise HTTPException(status_code=400,detail=str(error))
+
     def _codex_service():
         if codex_agent is None:
             raise HTTPException(status_code=400,detail='当前进程未启用 Codex Agent，请运行完整监控服务')
@@ -274,10 +306,16 @@ def create_app(
 
     @app.get('/api/agent/jobs')
     def agent_jobs():
-        return _codex_service().status()
+        result=codex_agent.status() if codex_agent else {'jobs':[],'running':False}
+        result['jobs']=sorted(result['jobs']+material_workspace.jobs(),key=lambda job:job['created'],reverse=True)[:100]
+        return result
 
     @app.get('/api/agent/jobs/{ident}')
     def agent_job(ident: str):
+        if ident.startswith('skill_'):
+            jobs=material_workspace.jobs(ident)
+            if not jobs:raise HTTPException(status_code=404,detail='任务不存在')
+            return jobs[0]
         result=_codex_service().status(ident)
         if not result['jobs']:raise HTTPException(status_code=404,detail='任务不存在')
         return result['jobs'][0]
