@@ -115,7 +115,7 @@ def _labeled_clips(store) -> list[tuple[str, int]]:
 
 
 def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE_DIM,
-                   force: bool = False, progress_cb=None):
+                   force: bool = False, progress_cb=None, require_video=False):
     """对每个有标注且 clip 文件还在的段，取特征 + 标签。返回 (X, y, names)。
 
     force=True：从头重建——对还有 mp4 的段强制重抽特征（被裁掉的退回缓存）。
@@ -130,7 +130,9 @@ def gather_dataset(clips_dir, training_dir, store, extractor, dim: int = FEATURE
         # 不预判 clip 是否存在：extract_and_cache 先看特征缓存——clip 即便被 max_clips 裁掉，
         # 只要特征缓存(~4KB)还在就保住这条样本（喝水正样本稀少，绝不能因裁剪丢）。
         # 既无缓存、clip 也没了 → extract_and_cache 返回 None，跳过。
-        feat = extract_and_cache(training_clip_path(clips_dir,training_dir,name), training_dir, extractor, dim, force=force)
+        path = training_clip_path(clips_dir, training_dir, name)
+        feat = (extract_and_cache(path, training_dir, extractor, dim, force=force)
+                if not require_video or path.is_file() else None)
         if feat is not None:
             X.append(feat); y.append(label); names.append(name)
         if progress_cb is not None:
@@ -170,7 +172,7 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
     with connect(store.db_path) as conn:
         snapshot = conn.execute("SELECT clip_name, COALESCE(action_drinking,is_drinking), ts FROM labels WHERE source IS NULL OR source IN ('human','ai')").fetchall()
     X, y, names = gather_dataset(clips_dir, training_dir, store, extractor, dim,
-                                 force=rebuild, progress_cb=progress_cb)
+                                 force=rebuild, progress_cb=progress_cb, require_video=finetune)
     counts = {"drinking": int((y == 1).sum()), "not_drinking": int((y == 0).sum())}
     too_few = [c for c in ("drinking", "not_drinking") if counts[c] < MIN_PER_CLASS]
     if too_few:
@@ -182,7 +184,14 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
         paths={name:training_clip_path(clips_dir,training_dir,name) for name in names}
         if not all(path.exists() for path in paths.values()):
             raise ValueError('主干微调需要原视频；缺失视频时请使用分类头训练或恢复录像')
-        weights_path = fine_tune_s3d(clips_dir,names,y,train_idx,val_idx,models_dir,roi=roi,progress_cb=_emit,paths=paths)
+        parent = registry.get(registry.active_id()) if registry.active_id() else None
+        initial_weights = None
+        if parent and parent.get('base') == 's3d+head':
+            parent_head = DrinkingHead.load(parent['path'])
+            if parent_head.metadata.get('backend', '').startswith('s3d-'):
+                initial_weights = parent_head.metadata.get('weights_path')
+        weights_path = fine_tune_s3d(clips_dir,names,y,train_idx,val_idx,models_dir,roi=roi,
+                                    progress_cb=_emit,paths=paths,initial_weights=initial_weights)
         extractor = extractor_for_backend('s3d-finetuned-v1',roi,weights_path)
         backend = extractor.backend
         features=[]
@@ -226,6 +235,9 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
     used_snapshot = [r for r in snapshot if r[0] in used_names]
     fingerprint = hashlib.sha256(json.dumps(used_snapshot, sort_keys=True).encode()).hexdigest()
     report = {**metrics, 'counts': counts, 'backend': backend, 'threshold': head.threshold,
+              'training_mode': 'partial_backbone_finetune' if finetune else 'frozen_backbone_head_only',
+              'trainable_backbone': 'features[-3:]' if finetune else None,
+              'parent_version': (parent or {}).get('id') if finetune else None,
               'split_method': split_method, 'warnings': warnings, 'auto_label_eligible': eligible,
               'dataset_fingerprint': fingerprint,
               'split': {'train': [names[i] for i in train_idx], 'validation': [names[i] for i in val_idx],
@@ -481,7 +493,9 @@ class VideoTrainingManager:
             if self._auto_activate and self.on_complete:
                 comparison=res.get('comparison') or {}
                 regressed=comparison.get('delta_balanced_accuracy',0)<0
-                if regressed:
+                if not res.get('auto_label_eligible'):
+                    res['activation_note']='独立评估未达要求，模型已保存供测试，保留原模型。'
+                elif regressed:
                     res['activation_note']='共同留出集表现退步，保留原模型；新版本可在模型版本中测试。'
                 else:
                     try:

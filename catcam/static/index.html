@@ -121,6 +121,7 @@ applyAppearance();
   <div class="ph an" style="--i:0"><div><h1>趋势</h1><p>一眼看懂小猫的喝水情况</p></div>
     <div class="seg-ctl" id="rangeCtl">
       <button class="on" onclick="setRange(7,this)">近 7 天</button>
+      <button onclick="setRange('week',this)">本周</button><button onclick="setRange('month',this)">本月</button>
       <button onclick="setRange(30,this)">近 30 天</button></div></div>
   <div class="grid">
     <div class="card sp12 an" style="--i:1"><div class="card-b">
@@ -130,6 +131,8 @@ applyAppearance();
           <div class="trend-status" id="trStatus">–</div>
           <div class="trend-sub" id="trSub"></div></div>
       </div></div></div>
+    <div class="card sp6 an trend-chart-card"><div class="card-h">每日饮水次数 <span class="note">柱状图 · 仅计确认喝水</span></div><div class="card-b"><div id="trendBars"></div><p class="note">空白日期表示没有确认记录，也可能是未监控或尚未复核。</p></div></div>
+    <div class="card sp6 an trend-chart-card"><div class="card-h">饮水频率走势 <span class="note">折线图 · 最近 7 天平均次数</span></div><div class="card-b"><div id="trendLine"></div><p class="note">7 天均值 · 本周 / 本月截至今天，今日尚未结束。</p></div></div>
     <div class="card sp6 an" style="--i:2"><div class="card-h">一天里什么时候爱喝水 <span class="note" id="hourPeak"></span></div>
       <div class="card-b"><div class="heatrow" id="hourHeat"></div>
       <div class="heataxis"><span>0</span><span>6</span><span>12</span><span>18</span><span>24 点</span></div></div></div>
@@ -171,10 +174,10 @@ applyAppearance();
     <div class="studio-grid"><div class="studio-main">
       <section class="studio-panel"><div class="studio-panel-head"><div><span class="fountain-kicker">01 · 准备数据</span><h2>训练从正确标注开始</h2></div><span id="studioReadiness" class="tag">正在读取</span></div><div class="studio-data-grid"><div><span>等待人工标注</span><strong id="dsUn">—</strong><small>段候选录像</small></div><div class="highlight"><span>新增训练数据</span><strong id="dsNew">—</strong><small>已标注，尚未训练</small></div><div><span>已参与训练</span><strong id="dsTr">—</strong><small>段人工标注</small></div><div><span>喝水 / 没喝动作</span><strong id="dsBal">—</strong><small>启动训练每类至少 4 段</small></div></div><button class="studio-link" onclick="setLab('label',$('#labTabs').children[0])">去复核和纠错 <span>→</span></button></section>
       <section class="studio-panel studio-training"><div class="studio-panel-head"><div><span class="fountain-kicker">02 · 开始训练</span><h2>让模型适应这个场景</h2></div><span class="studio-device">在本机运行</span></div><p class="studio-description">用已确认的喝水与没喝动作训练，再用独立片段检查漏判和误判。</p>
-        <label class="studio-field">训练方式<select id="trainBackend"><option value="s3d-temporal-v2">连续动作 · 轻量训练（推荐）</option><option value="s3d-finetuned-v1">连续动作 · 深度微调（较慢）</option><option value="videomae-temporal-v1">VideoMAE · 需下载模型</option><option value="s3d-legacy">旧版特征 · 兼容已有缓存</option></select></label>
+        <label class="studio-field">训练方式<select id="trainBackend"><option value="s3d-temporal-v2">S3D · 只训练分类头（快）</option><option value="s3d-finetuned-v1">S3D · 微调末段主干＋分类头（慢）</option><option value="videomae-temporal-v1">VideoMAE · 冻结主干，只训练分类头</option><option value="s3d-legacy">旧版 S3D · 仅兼容历史缓存</option></select></label>
         <label class="studio-checkbox"><input id="trainAutoActivate" type="checkbox" checked><span>完成后自动启用合格的新版本<small>新版本退步或不满足要求时，继续保留当前模型。</small></span></label>
         <div class="studio-train-action"><button id="trainVideoBtn" class="btn" onclick="trainVideo()">开始训练</button><span id="studioTrainHint">正在读取训练状态</span></div><div id="trainVideoProg" style="display:none"></div><div class="t-status" id="trainVideoStatus" role="status" aria-live="polite"></div>
-        <details class="studio-explainer"><summary>高级选项与数据说明</summary><label class="studio-checkbox"><input type="checkbox" id="trainVideoRebuild"><span>从头提取特征，忽略已有缓存</span></label><p>按日期隔离数据，日期不足时采用分层划分；验证集调整阈值，独立测试集报告表现。轻量训练使用连续动作窗口，深度微调会进一步调整模型主干。</p><div class="t-status" id="datasetStatus"></div></details>
+        <details class="studio-explainer"><summary>高级选项与数据说明</summary><label class="studio-checkbox"><input type="checkbox" id="trainVideoRebuild"><span>从头提取特征，忽略已有缓存</span></label><p>按日期隔离数据，日期不足时采用分层划分；验证集调整阈值，独立测试集报告表现。分类头训练冻结预训练主干，只更新最后的小分类器；缓存齐全时几秒完成是正常现象。S3D 主干微调会更新末三组特征层，需原视频且明显更慢。VideoMAE 选项目前只提取冻结特征，并不微调 Hugging Face 主干。重新提取缓存不等于从随机权重训练。</p><div class="t-status" id="datasetStatus"></div></details>
       </section>
     </div><aside class="studio-side">
       <section class="studio-panel studio-scene"><span class="fountain-kicker">场景准备</span><h3>先告诉模型，在哪里喝水</h3><div class="studio-scene-preview"><img src="/snapshot.jpg" alt="当前摄像头画面" loading="lazy"><span>当前画面</span></div><p>框选水盆与猫嘴活动范围，减少背景干扰。改变机位后，重新设置并训练。</p><button class="btn ghost" onclick="openSceneSetup()">设置饮水区域</button></section>
@@ -184,7 +187,7 @@ applyAppearance();
   </div>
 
   <div class="lab-pane" id="lab-models"><div class="studio-training-advice" data-training-advice role="status"></div><section class="studio-panel studio-active"><div class="studio-panel-head"><div><span class="fountain-kicker">当前运行</span><h2>正在使用的模型</h2></div></div><div id="activeBox"></div></section>
-    <div class="studio-versions-heading"><div><h2>模型版本</h2><p>查看每次训练的结果，按需要切换版本。</p></div><button class="btn ghost" onclick="recheckClips()">重新评估已有录像</button></div><p class="lab-note" id="recheckStatus" role="status"></p><div id="modelList" class="mlist"></div>
+    <div class="studio-versions-heading"><div><h2>模型版本</h2><p>查看每次训练的结果，按需要切换版本。</p></div><button class="btn ghost" onclick="recheckClips()">重新评估已有录像</button></div><label class="btn ghost">导入分享模型<input type="file" accept=".zip" onchange="importSharedModel(this)" style="display:none"></label><p class="lab-note">分享包只含模型参数和汇总指标，不含录像、账号、家庭机位或本机路径；导入后先测试，再少量微调。</p><p class="lab-note" id="recheckStatus" role="status"></p><div id="modelList" class="mlist"></div>
   </div>
 </section>
 

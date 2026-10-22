@@ -655,3 +655,18 @@ def test_high_confidence_machine_labels_remain_reviewable_like_sidebar(tmp_path)
     assert set(names[:3]).issubset(page['clips'])
     compact = client.get('/api/clips/summary', params={'since': page['snapshot']}).json()
     assert compact['pending_count'] == page['counts']['review']
+
+
+def test_trend_calendar_periods_and_daily_totals(tmp_path):
+    from datetime import datetime
+    app, stats, _, _ = _build(tmp_path)
+    now = datetime.now()
+    stats.record_event(now.timestamp(), 'clip_calendar.mp4')
+    with sqlite3.connect(stats.db_path) as connection:
+        connection.execute("INSERT INTO labels (clip_name,is_drinking) VALUES ('clip_calendar.mp4',1)")
+    client = TestClient(app)
+    for period, length in [('week', now.weekday()+1), ('month', now.day)]:
+        response = client.get('/api/stats/trend', params={'period':period}).json()
+        assert len(response['days']) == length
+        assert response['days'][-1]['date'] == now.strftime('%m-%d')
+        assert sum(day['count'] for day in response['days']) == response['total'] == 1

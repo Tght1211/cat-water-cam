@@ -581,7 +581,7 @@ function bindCardFx(box){
 let trendDays=7;
 function heatColor(v,max){const a=v<=0?0.07:0.22+0.78*(v/Math.max(1,max));return `rgba(24,166,214,${a.toFixed(3)})`;}
 async function renderTrend(){
-  const r=await (await fetch('/api/stats/trend?days='+trendDays)).json();
+  const r=await (await fetch('/api/stats/trend?'+(typeof trendDays==='string'?'period='+trendDays:'days='+trendDays))).json();
   const pts=r.days||[],vals=pts.map(p=>p.count);
   const total=r.total??vals.reduce((a,b)=>a+b,0),days=pts.length;
   const avg=days?total/days:0,today=days?vals[vals.length-1]:0;
@@ -591,17 +591,31 @@ async function renderTrend(){
   $('#trStatus').textContent=today===0?'今天尚无确认记录':'已确认的饮水访问';
   const prev=r.prev_total||0;
   const deltaTxt=prev?`　·　环比 ${total>=prev?'▲':'▼'} ${Math.round(Math.abs(total-prev)/prev*100)}%`:'';
-  $('#trSub').innerHTML=`日均 <b>${avg.toFixed(1)}</b> 次　·　近 ${days} 天共 <b>${total}</b> 次　·　活跃 <b>${r.active_days??0}/${days}</b> 天${deltaTxt}`;
+  $('#trSub').innerHTML=`日均 <b>${avg.toFixed(1)}</b> 次　·　${trendDays==='week'?'本周':trendDays==='month'?'本月':`近 ${days} 天`}共 <b>${total}</b> 次　·　活跃 <b>${r.active_days??0}/${days}</b> 天${deltaTxt}`;
   const hourly=r.hourly||[],hmax=Math.max(1,...hourly);
   $('#hourHeat').innerHTML=hourly.map((v,h)=>
     `<div class="hcell" style="background:${heatColor(v,hmax)};--i:${h}" title="${h}:00–${(h+1)%24}:00 · ${v} 次"></div>`).join('');
   const pk=Math.max(0,...hourly);
   $('#hourPeak').textContent=pk>0?`最爱 ${hourly.indexOf(pk)}:00 前后`:'';
+  renderDailyTrend(pts);
   const cmax=Math.max(1,...vals);
   $('#calHeat').innerHTML=pts.map((p,i)=>
     `<div class="ccell" style="background:${heatColor(p.count,cmax)};--i:${i}" title="${p.date} · ${p.count} 次"><span>${p.count||''}</span></div>`).join('');
   $('#calNote').textContent=`单日最多 ${cmax} 次`;
   $$('#pg-trend .callegend .cl').forEach(el=>{el.style.background=heatColor(+el.dataset.l,4);});
+}
+function renderDailyTrend(points){
+  const w=600,h=190,left=34,bottom=157,top=16,n=points.length;
+  if(!n)return;
+  const values=points.map(p=>p.count),peak=Math.max(1,...values),step=(w-left-16)/n;
+  const average=values.map((v,i)=>{const a=values.slice(Math.max(0,i-6),i+1);return a.reduce((x,y)=>x+y,0)/a.length;});
+  const axis=`<line x1="${left}" y1="${bottom}" x2="${w-16}" y2="${bottom}" stroke="currentColor" opacity=".3"/>`;
+  const labels=points.map((p,i)=>i%Math.max(1,Math.ceil(n/10))===0||i===n-1?`<text x="${left+step*(i+.5)}" y="181" text-anchor="middle" fill="currentColor" font-size="12">${esc(p.date)}</text>`:'').join('');
+  const ticks=[0,peak].map(v=>`<text x="32" y="${bottom-(bottom-top)*v/peak+4}" text-anchor="end" fill="currentColor" font-size="12">${v}</text>`).join('');
+  const svg=content=>`<svg viewBox="0 0 ${w} ${h}" role="img" class="trend-chart-svg" aria-label="${esc(points[0].date)}至${esc(points[n-1].date)}饮水次数">${axis}${ticks}${labels}${content}</svg>`;
+  $('#trendBars').innerHTML=svg(points.map((p,i)=>`<rect x="${left+step*i+step*.15}" y="${bottom-(bottom-top)*p.count/peak}" width="${step*.7}" height="${(bottom-top)*p.count/peak}" rx="3" fill="var(--aqua,#28c9dd)"><title>${esc(p.date)}：${p.count} 次</title></rect>`).join(''));
+  const coords=average.map((v,i)=>`${left+step*(i+.5)},${bottom-(bottom-top)*v/peak}`);
+  $('#trendLine').innerHTML=svg(`<polyline points="${coords.join(' ')}" fill="none" stroke="#2ad4b5" stroke-width="3"/>`+average.map((v,i)=>`<circle cx="${left+step*(i+.5)}" cy="${bottom-(bottom-top)*v/peak}" r="4" fill="#2ad4b5"><title>${esc(points[i].date)}：近 ${Math.min(i+1,7)} 天日均 ${v.toFixed(1)} 次</title></circle>`).join(''));
 }
 function setRange(d,btn){trendDays=d;for(const b of $('#rangeCtl').children)b.classList.toggle('on',b===btn);renderTrend();}
 
@@ -924,7 +938,7 @@ function renderModels(s){
   const box=$('#modelList');if(!box)return;
   const models=s.models||[];
   box.innerHTML=(models.length?models.map(m=>{const cur=m.id===s.active,r=m.report,c=r?.counts||m.image_counts||{};
-    return `<article class="studio-version ${cur?'current':''}"><div class="studio-version-title"><div><h3>${esc(m.id)} ${cur?'<span class="tag ok">生效中</span>':''}</h3><p>${fmtTime(m.created_ts)} · ${esc(r?.backend||'预置 / 旧版模型')}</p></div><button class="mbtn ${cur?'cur':''}" ${cur?'disabled':`onclick="activate('${esc(m.id)}')"`}>${cur?'当前版本':'启用此版本'}</button></div><div class="studio-version-metrics"><div><span>${r?'独立测试准确率':'发布评估准确率'}</span><strong>${fmtAcc(m.top1)}</strong></div><div><span>喝水召回率</span><strong>${fmtAcc(r?.drinking_recall)}</strong></div><div><span>喝水精确率</span><strong>${fmtAcc(r?.drinking_precision)}</strong></div><div><span>漏判 / 误判</span><strong>${r?.confusion?.missed_drinking??'—'} <small>/</small> ${r?.confusion?.false_drinking??'—'}</strong></div></div><div class="studio-version-footer"><span>${r?`训练数据 · 喝水 ${c.drinking||0} / 没喝动作 ${c.not_drinking||0} 段`:'尚未在当前场景独立评估'}</span><span>${r?(r.auto_label_eligible?'满足自动判定评估条件':'继续测试与纠错'):'通过人工复核检验实际效果'}</span></div>${r?.warnings?.length?`<details class="studio-explainer"><summary>评估说明</summary><p>${r.warnings.map(esc).join(' ')}</p></details>`:''}</article>`;
+    return `<article class="studio-version ${cur?'current':''}"><div class="studio-version-title"><div><h3>${esc(m.id)} ${cur?'<span class="tag ok">生效中</span>':''}</h3><p>${fmtTime(m.created_ts)} · ${esc(r?.backend||'预置 / 旧版模型')}</p></div><button class="mbtn ${cur?'cur':''}" ${cur?'disabled':`onclick="activate('${esc(m.id)}')"`}>${cur?'当前版本':'启用此版本'}</button></div><div class="studio-version-metrics"><div><span>${r?'独立测试准确率':'发布评估准确率'}</span><strong>${fmtAcc(m.top1)}</strong></div><div><span>喝水召回率</span><strong>${fmtAcc(r?.drinking_recall)}</strong></div><div><span>喝水精确率</span><strong>${fmtAcc(r?.drinking_precision)}</strong></div><div><span>漏判 / 误判</span><strong>${r?.confusion?.missed_drinking??'—'} <small>/</small> ${r?.confusion?.false_drinking??'—'}</strong></div></div><div class="studio-version-footer"><span>${r?`训练数据 · 喝水 ${c.drinking||0} / 没喝动作 ${c.not_drinking||0} 段`:'尚未在当前场景独立评估'}</span><span>${r?(r.auto_label_eligible?'满足自动判定评估条件':'继续测试与纠错'):'通过人工复核检验实际效果'}</span><a class="btn ghost" href="/api/model/export/${encodeURIComponent(m.id)}" download>导出分享模型</a></div>${r?.warnings?.length?`<details class="studio-explainer"><summary>评估说明</summary><p>${r.warnings.map(esc).join(' ')}</p></details>`:''}</article>`;
   }).join(''):`<div class="studio-panel studio-empty"><h3>还没有专属模型版本</h3><p>标注喝水和没喝动作，再开始第一次训练。</p><button class="btn ghost" onclick="setLab('train',$('#labTabs').children[1])">开始准备</button></div>`)+`<div class="studio-disable-model"><span>${s.active?'需要暂停使用专属模型时，可退回基础检测。':'当前使用基础检测录制候选。'}</span><button class="mbtn off" ${s.active?'onclick="activate(null)"':'disabled'}>${s.active?'停用专属模型':'基础检测运行中'}</button></div>`;
 }
 async function activate(id,mode){
@@ -936,6 +950,16 @@ async function activate(id,mode){
   pollTrain();
 }
 
+async function importSharedModel(input){
+  const file=input.files?.[0];if(!file)return;
+  try{
+    if(file.size>128*1024*1024)throw Error('模型包超过 128 MB');
+    const response=await fetch('/api/model/import',{method:'POST',headers:{'Content-Type':'application/zip'},body:file});
+    const result=await response.json();if(!response.ok)throw Error(result.detail||'导入失败');
+    toast(result.note);pollTrain();
+  }catch(error){toast(error.message||'导入失败','err');}
+  finally{input.value='';}
+}
 let recheckTimer=null;
 async function recheckClips(){
   const r=await (await fetch('/api/model/review',{method:'POST'})).json();

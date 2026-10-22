@@ -129,7 +129,12 @@ class S3DFeatureExtractor:
         w = S3D_Weights.DEFAULT
         model = s3d(weights=w)
         if self.weights_path:
-            model.load_state_dict(torch.load(self.weights_path,map_location='cpu',weights_only=True),strict=False)
+            if str(self.weights_path).endswith('.safetensors'):
+                from safetensors.torch import load_file
+                state = load_file(str(self.weights_path))
+            else:
+                state = torch.load(self.weights_path,map_location='cpu',weights_only=True)
+            model.load_state_dict(state,strict=False)
         model.eval()
         for p in model.parameters():       # 冻结
             p.requires_grad_(False)

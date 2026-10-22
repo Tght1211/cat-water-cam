@@ -23,6 +23,12 @@ def install_bundled_video_model(
     """为空 registry 安装随包发布的视频分类头；已有任何版本时保持用户数据不变。"""
     if registry.list():
         return None
+    bundle = Path(__file__).with_name('assets')/'pretrained.catmodel.zip'
+    if source is None and bundle.is_file():
+        from catcam.model_bundle import import_bundle
+        entry = import_bundle(bundle.read_bytes(), registry, models_dir)
+        registry.set_active(entry['id'], 'shadow')
+        return entry
     source = source or Path(__file__).with_name("assets") / BUNDLED_VIDEO_MODEL
     if not source.exists():
         return None

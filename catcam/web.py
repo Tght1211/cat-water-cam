@@ -312,10 +312,14 @@ def create_app(
         return {"enabled": True, **audio_status_provider()}
 
     @app.get("/api/stats/trend")
-    def stats_trend(days: int = 7):
+    def stats_trend(days: int = 7, period: str = ""):
         """趋势页一次取齐：每日次数 + KPI（总计/活跃天数）+ 环比 + 时段/星期分布。"""
         days = max(1, min(int(days), 90))
         now = datetime.now()
+        if period == "week":
+            days = now.weekday() + 1
+        elif period == "month":
+            days = now.day
         points = stats.daily_counts(now, days)
         # 当前窗口 [start, end)
         end_day = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
@@ -630,6 +634,38 @@ def create_app(
             s['active_mode'] = registry.active_mode()
             s['hitrate'] = _active_hitrate()
         return s
+
+    @app.get('/api/model/export/{model_id}')
+    def export_model(model_id: str):
+        if registry is None:
+            raise HTTPException(status_code=400, detail='未启用模型管理')
+        entry = registry.get(model_id)
+        if not entry or entry.get('base') != 's3d+head':
+            raise HTTPException(status_code=404, detail='没有可分享的视频模型')
+        from catcam.model_bundle import export_bundle
+        try:
+            data = export_bundle(entry)
+        except (ValueError, OSError) as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        return Response(data, media_type='application/zip',
+                        headers={'Content-Disposition':f'attachment; filename="catcam-{model_id}.catmodel.zip"'})
+
+    @app.post('/api/model/import')
+    async def import_model(request: Request):
+        if registry is None:
+            raise HTTPException(status_code=400, detail='未启用模型管理')
+        from catcam.model_bundle import import_bundle, MAX_BUNDLE_BYTES
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data)+len(chunk) > MAX_BUNDLE_BYTES:
+                raise HTTPException(status_code=413, detail='模型包超过 128 MB')
+            data.extend(chunk)
+        roi = (setup_provider() or {}).get('bowl_roi') if setup_provider else None
+        try:
+            entry = await asyncio.to_thread(import_bundle, bytes(data), registry, registry.path.parent, roi=roi)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        return {'ok':True, 'id':entry['id'], 'note':'模型已导入，尚未启用；请先设置本家庭饮水区域并测试。'}
 
     @app.post("/api/model/activate")
     def activate(body: dict):

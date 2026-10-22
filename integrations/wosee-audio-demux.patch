@@ -1,0 +1,23 @@
+--- a/src/web_server.py
++++ b/src/web_server.py
+@@ -23,7 +23,7 @@
+ from cloud_account import CloudCameraAccount
+ from protocol import stream_quality_packet
+ from recording import RollingRecorder
+-from audio import CameraAudio
++from audio import CameraAudio, AUDIO_CODECS
+ from integration import IntegrationServer
+ from orientation import OrientationStore, validate_orientation
+ from workspace_settings import WorkspaceSettings, recording_directory, prepare_recording_directory
+@@ -152,7 +152,10 @@
+     def payload(self, channel, payload):
+         if not self.receiver:
+             return
+-        if channel != self.receiver.video_channel:
++        # 部分设备把音频与视频复用同一传输通道，必须按媒体编码头分流。
++        # 不能只用通道号，否则音频会被送入视频解码器并丢弃。
++        codec = int.from_bytes(payload[:2], "little") if len(payload) >= 16 else None
++        if channel != self.receiver.video_channel or codec in AUDIO_CODECS:
+             if self.audio_clients:
+                 if self.audio_queue.full():
+                     self.audio_queue.get_nowait()

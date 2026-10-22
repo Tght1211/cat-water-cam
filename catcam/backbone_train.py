@@ -6,13 +6,20 @@ import numpy as np
 from catcam.videojudge import read_temporal_windows
 
 
-def fine_tune_s3d(clips_dir,names,y,train_indices,val_indices,models_dir,roi=None,epochs=8,progress_cb=None,paths=None):
+def fine_tune_s3d(clips_dir,names,y,train_indices,val_indices,models_dir,roi=None,epochs=8,progress_cb=None,paths=None,initial_weights=None):
     import torch
     from torchvision.models.video import s3d,S3D_Weights
     torch.manual_seed(0)
     device=torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     weights=S3D_Weights.DEFAULT
     model=s3d(weights=weights)
+    if initial_weights:
+        if str(initial_weights).endswith('.safetensors'):
+            from safetensors.torch import load_file
+            state = load_file(str(initial_weights))
+        else:
+            state = torch.load(initial_weights, map_location='cpu', weights_only=True)
+        model.load_state_dict(state, strict=False)
     for parameter in model.parameters():parameter.requires_grad_(False)
     for parameter in model.features[-3:].parameters():parameter.requires_grad_(True)
     model.classifier=torch.nn.Conv3d(1024,1,1)

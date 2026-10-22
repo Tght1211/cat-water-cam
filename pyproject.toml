@@ -14,7 +14,7 @@ videomae = ["transformers>=4.40,<5", "safetensors>=0.4"]
 include = ["catcam*"]
 
 [tool.setuptools.package-data]
-catcam = ["assets/*.npz", "static/*.html", "static/*.css", "static/*.js"]
+catcam = ["assets/*.npz", "assets/*.zip", "static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

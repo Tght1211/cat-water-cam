@@ -169,7 +169,8 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
     monitoring = MonitoringStore(cfg.db_path)
     recorder = ClipRecorder(
         cfg.clips_dir, cfg.max_clips, cfg.fps, retention_days=cfg.retention_days,
-        archive_dirs=(cfg.training_dir / 'videos',),
+        # 人工/AI 标注的训练原视频单独保留，不随活动回放的三天保留策略删除。
+        archive_dirs=(),
     )
     recorder.prune()
     feedback = FeedbackStore(cfg.db_path, cfg.training_dir)
@@ -267,16 +268,23 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
     # 录音（仅会话录制模式）：持续采麦克风进环形缓冲，会话结束把对应时段 mux 进 mp4。
     # 起不来（无权限/无设备）由 AudioRing 内部看门狗兜底 → 无声，不影响录制。
     audio_ring = None
-    if cfg.record_audio and session is not None and not cfg.video_source.startswith("wosee:"):
+    if cfg.record_audio and session is not None:
         # 不限长的视频仍使用有界音频缓冲，避免麦克风持续占满内存。
         ring_seconds = cfg.preroll_seconds + (cfg.max_session_seconds or 3600.0) + 10.0
-        audio_ring = AudioRing(
-            cfg.audio_input_format, cfg.audio_device,
-            sample_rate=cfg.audio_sample_rate, max_seconds=ring_seconds,
-        )
+        if cfg.video_source.startswith('wosee:'):
+            from catcam.wosee_audio import WoSeeAudioRing
+            audio_ring = WoSeeAudioRing(cfg.video_source, max_seconds=ring_seconds)
+        else:
+            audio_ring = AudioRing(
+                cfg.audio_input_format, cfg.audio_device,
+                sample_rate=cfg.audio_sample_rate, max_seconds=ring_seconds,
+            )
         audio_ring.start()
-        print(f"正在启动录音（{cfg.audio_input_format} {cfg.audio_device}）；"
-              f"⚠️ 若无声请在『系统设置→隐私与安全性→麦克风』给终端授权。")
+        if cfg.video_source.startswith('wosee:'):
+            print('正在连接 WoSee 摄像头音轨（不使用本机麦克风）。')
+        else:
+            print(f"正在启动录音（{cfg.audio_input_format} {cfg.audio_device}）；"
+                  f"⚠️ 若无声请在『系统设置→隐私与安全性→麦克风』给终端授权。")
 
     latest = LatestFrame()
     flow = FlowMonitor(Path(cfg.data_dir) / "dispenser_flow")
@@ -479,7 +487,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
             if audio_ring is not None and audio_ring.available:
                 pcm = audio_ring.slice(res.audio_start, res.audio_end)
                 muxed = mux_audio_into(
-                    cfg.clips_dir / res.clip_name, pcm, cfg.audio_sample_rate
+                    cfg.clips_dir / res.clip_name, pcm, audio_ring.sr
                 )
                 audio_ring.record_mux_result(res.clip_name, muxed)
                 if muxed:
@@ -649,7 +657,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
                 if audio_ring is not None and audio_ring.available:
                     mux_audio_into(cfg.clips_dir / res.clip_name,
                                    audio_ring.slice(res.audio_start, res.audio_end),
-                                   cfg.audio_sample_rate)
+                                   audio_ring.sr)
         if audio_ring is not None:
             audio_ring.stop()
         cap.release()
