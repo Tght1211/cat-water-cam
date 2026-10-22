@@ -1,6 +1,14 @@
 from catcam.framebuffer import FrameBuffer
 
 
+def test_clear_prevents_preroll_crossing_a_disconnect():
+    buffer = FrameBuffer(4, 10)
+    buffer.add(1, "old")
+    buffer.clear()
+    buffer.add(10, "fresh")
+    assert buffer.all_frames() == ["fresh"]
+
+
 def test_maxlen_from_seconds_and_fps():
     fb = FrameBuffer(seconds=4.0, fps=10)
     assert fb.maxlen == 40

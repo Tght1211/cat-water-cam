@@ -36,7 +36,8 @@ def mux_cmd(video: str, pcm_raw: str, out: str, sample_rate: int) -> list[str]:
         "ffmpeg", "-nostdin", "-loglevel", "error", "-y",
         "-i", str(video),
         "-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", str(pcm_raw),
-        "-c:v", "copy", "-c:a", "aac", "-shortest", str(out),
+        # 麦克风掉帧或环形缓冲不足时补静音，不能让短音轨截断完整饮水视频。
+        "-c:v", "copy", "-c:a", "aac", "-af", "apad", "-shortest", str(out),
     ]
 
 

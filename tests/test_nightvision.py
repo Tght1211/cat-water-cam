@@ -63,6 +63,15 @@ def test_dark_face_is_detected_and_remains_until_it_leaves():
     assert not d.observe(background,roi,8)['present']
 
 
+def test_lit_closeup_head_remains_present_without_motion_for_two_minutes():
+    d=LowLightPresenceDetector();roi=(.3,.3,.7,.7)
+    background=np.full((240,320,3),180,dtype=np.uint8)
+    for i in range(25):assert not d.observe(background,roi,i*.1)['present']
+    face=background.copy();face[35:120,105:210]=80
+    for i in range(25,1225):assert d.observe(face,roi,i*.1)['present']
+    assert not d.observe(background,roi,122.5)['present']
+
+
 def test_lowlight_noise_does_not_trigger_candidate():
     d=LowLightPresenceDetector();rng=np.random.default_rng(42)
     for i in range(50):

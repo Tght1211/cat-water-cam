@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+
+from catcam.database import connect
 from datetime import datetime, timedelta
 from pathlib import Path
+
+
+DRINKING_GAP_SECONDS = 60
 
 
 def day_bounds(dt: datetime) -> tuple[float, float]:
@@ -51,6 +56,10 @@ class StatsStore:
                 conn.execute('ALTER TABLE events ADD COLUMN water_review INTEGER NOT NULL DEFAULT 0')
             if 'review_candidate' not in ecols:
                 conn.execute('ALTER TABLE events ADD COLUMN review_candidate INTEGER')
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS session_times ('
+                'clip_name TEXT PRIMARY KEY, presence_start REAL, presence_end REAL, '
+                'video_start REAL, video_end REAL, end_reason TEXT)')
             # labels 表由 FeedbackStore 维护（同一个 db）。这里也 IF NOT EXISTS 一下，
             # 保证统计查询的 LEFT JOIN 永远有表可连（无论两个 store 谁先初始化）。
             conn.execute(
@@ -61,7 +70,7 @@ class StatsStore:
             )
 
     def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        return connect(self.db_path)
 
     def record_event(
         self,
@@ -71,12 +80,18 @@ class StatsStore:
         predicted_by: str | None = None,
         candidate_only: bool = False,
         review_candidate: bool = True,
+        session=None,
     ) -> int:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO events (ts, clip_name, predicted, predicted_by, candidate_only, review_candidate) VALUES (?, ?, ?, ?, ?, ?)",
                 (timestamp, clip_name, predicted, predicted_by,int(candidate_only),int(review_candidate)),
             )
+            if session is not None:
+                conn.execute(
+                    'INSERT OR REPLACE INTO session_times VALUES (?,?,?,?,?,?)',
+                    (clip_name, session.presence_start, session.presence_end,
+                     session.audio_start, session.audio_end, session.end_reason))
             return int(cur.lastrowid)
 
     def review_candidates(self):
@@ -171,22 +186,28 @@ class StatsStore:
         result = {}
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT clip_name,predicted,predicted_confidence,predicted_by,"
-                "candidate_only,water_review,review_candidate FROM events "
-                "WHERE clip_name IS NOT NULL ORDER BY ts ASC,id ASC"
+                "SELECT e.clip_name,e.predicted,e.predicted_confidence,e.predicted_by,"
+                "e.candidate_only,e.water_review,e.review_candidate,"
+                "s.presence_start,s.presence_end,s.video_start,s.video_end,s.end_reason "
+                "FROM events e LEFT JOIN session_times s ON s.clip_name=e.clip_name "
+                "WHERE e.clip_name IS NOT NULL ORDER BY e.ts ASC,e.id ASC"
             ).fetchall()
-        for name, pred, confidence, version, visual, water, candidate in rows:
+        for name, pred, confidence, version, visual, water, candidate, start, end, video_start, video_end, reason in rows:
             item = result.setdefault(name, {"candidate_only": False, "water_review": False,
                                              "review_candidate": False})
             item['candidate_only'] |= bool(visual)
             item['water_review'] |= bool(water)
             item['review_candidate'] |= bool(candidate)
+            if reason is not None:
+                item['session'] = {'presence_start': start, 'presence_end': end,
+                                   'video_start': video_start, 'video_end': video_end,
+                                   'end_reason': reason}
             if pred is not None:
                 item['prediction'] = {"drinking": bool(pred), "confidence": confidence, "by": version}
         return result
 
     def drinking_records(self):
-        """确认喝水记录至少相隔 60 秒，原始事件和人工标注不修改。"""
+        """相邻确认片段间隔不足 60 秒属于同一次喝水，原始事件和标注保留。"""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT MIN(e.ts),e.clip_name FROM events e JOIN labels l "
@@ -194,9 +215,11 @@ class StatsStore:
                 "GROUP BY e.clip_name ORDER BY MIN(e.ts),e.clip_name"
             ).fetchall()
         records = []
+        previous_timestamp = None
         for timestamp, name in rows:
-            if not records or timestamp - records[-1]['ts'] >= 60:
+            if previous_timestamp is None or timestamp - previous_timestamp >= DRINKING_GAP_SECONDS:
                 records.append({'ts': timestamp, 'clip_name': name})
+            previous_timestamp = timestamp
         return records
 
     def count_between(self, start_ts: float, end_ts: float) -> int:

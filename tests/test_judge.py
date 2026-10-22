@@ -164,13 +164,13 @@ def test_extreme_auto_confirmation_keeps_other_results_for_review(drinking,score
 
 
 @pytest.mark.parametrize('mode',['shadow','gate'])
-def test_high_action_score_during_stopped_water_needs_intake_review(mode):
+def test_stopped_water_does_not_veto_confident_drinking(mode):
     em,st,fb=_FakeEmailer(),_FakeStats(),_FakeFeedback()
     st.requires_water_review=lambda name:True
     class Local:
         version='v2'
         def judge(self,path):return Verdict(True,1.0,'舔水动作','v2',False)
     result=route_clip(clip_path='dry.mp4',start_ts=100,photo='P',ai_labeler=None,local_judge=Local(),mode=mode,emailer=em,stats=st,feedback=fb,auto_confirm_extremes=True)
-    assert not fb.machine
-    assert result['authority'] is None
-    assert result['emailed'] is False
+    assert fb.machine == [('dry.mp4', True, 'local')]
+    assert result['authority'].drinking
+    assert result['emailed'] is True

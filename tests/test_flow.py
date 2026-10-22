@@ -14,12 +14,13 @@ def test_stopped_dwell_and_stale_alert(tmp_path):
     m = FlowMonitor(tmp_path, dwell=3)
     frame = image()
     m.calibrate('stopped', frame)
+    m.calibrate('flowing', image(22))
     base = m.last_seen
     # New reference is manually confirmed; recurring matches require stable observation.
     m.alert = False
-    for t in range(1, 6):
+    for t in range(1, 7):
         m.observe(base+t, frame, True)
-    assert m.status(base+5)['state'] == 'suspected_stopped'
+    assert m.status(base+6)['state'] == 'suspected_stopped'
     assert m.status(base+15)['state'] == 'unknown'
     assert m.status(base+15)['alert']
     restarted = FlowMonitor(tmp_path)
@@ -29,6 +30,7 @@ def test_stopped_dwell_and_stale_alert(tmp_path):
 
 def test_occlusion_darkness_and_changed_scene_cannot_clear_alert(tmp_path):
     m = FlowMonitor(tmp_path, dwell=2)
+    m.calibrate('flowing', image(22))
     m.calibrate('stopped', image())
     base = m.last_seen
     for t in range(1, 7):
@@ -152,3 +154,94 @@ def test_stopped_interval_context_is_limited_to_affected_video(tmp_path):
     assert m.was_stopped(105,115)
     assert m.was_stopped(95,110)
     assert not m.was_stopped(120,130)
+
+
+def test_missing_calibration_is_not_hidden_by_occlusion_or_offline(tmp_path):
+    m = FlowMonitor(tmp_path)
+    m.observe(100, image(), False, True)
+    for now in (100, 110):
+        status = m.status(now)
+        assert status['state'] == 'unconfigured'
+        assert not status['calibration_complete']
+        assert status['missing_references'] == ['停止出水', '正常出水']
+    m.calibrate('stopped', image())
+    assert m.status()['missing_references'] == ['正常出水']
+
+
+def test_stopped_evidence_is_three_real_frames_over_two_seconds_and_survives_restart(tmp_path):
+    m = FlowMonitor(tmp_path, roi=(.2,.2,.8,.8), dwell=2)
+    frame = image()
+    frame[:20,:20] = 0
+    m.calibrate('stopped', frame)
+    start = m.fault_since
+    base = m.last_seen
+    for i in range(1, 8):
+        current = frame.copy()
+        current[:20,:20] = i*25  # 出水区域外的时间标记，验证不是复制同一张图
+        m.observe(base+i*.5, current, True)
+    evidence = m.evidence(start)
+    assert len(evidence) == 3
+    times = [ts for ts, _ in evidence]
+    assert times[1]-times[0] == times[2]-times[1] == 1
+    means = [cv2.imdecode(np.frombuffer(jpg,np.uint8),cv2.IMREAD_COLOR)[2:15,2:15].mean()
+             for _, jpg in evidence]
+    assert means[0] < means[1] < means[2]
+    m.observe(base+4, frame, True)
+    assert m.evidence(start) == evidence  # 后续画面不得改写故障发生时的证据
+    assert FlowMonitor(tmp_path).evidence(start) == evidence
+
+
+def test_evidence_waits_for_continuous_unobstructed_frames(tmp_path):
+    m = FlowMonitor(tmp_path, dwell=0)
+    frame = image()
+    m.calibrate('stopped', frame)
+    start, base = m.fault_since, m.last_seen
+    m.observe(base+.5, frame, True)
+    assert m.evidence(start) == []
+    m.observe(base+1, frame, True, occluded=True)
+    m.observe(base+1.5, frame, True)
+    m.observe(base+2, frame, True)
+    assert m.evidence(start) == []
+    m.observe(base+10, frame, True)
+    m.observe(base+10.5, frame, True)
+    assert m.evidence(start) == []
+
+
+def test_one_reference_never_automatically_confirms_flow(tmp_path):
+    m = FlowMonitor(tmp_path, dwell=2)
+    m.calibrate('stopped', image())
+    m.alert = False
+    base = m.last_seen
+    for i in range(1, 20):
+        m.observe(base+i*.5, image(), True)
+    assert not m.alert
+    assert m.status(base+10)['state'] == 'unconfigured'
+
+
+def test_sparse_frames_cannot_satisfy_confirmation(tmp_path):
+    m = FlowMonitor(tmp_path, dwell=4)
+    m.calibrate('stopped', image())
+    m.calibrate('flowing', image(22))
+    base = m.last_seen
+    for t in (1, 3, 5, 7):
+        m.observe(base+t, image(), True)
+    assert not m.alert  # 时间已够，但有效帧不足
+    for t in (7.5, 8, 8.5):
+        m.observe(base+t, image(), True)
+    assert m.alert
+
+
+def test_occlusion_breaks_multiframe_confirmation(tmp_path):
+    m = FlowMonitor(tmp_path, dwell=2)
+    m.calibrate('stopped', image())
+    m.calibrate('flowing', image(22))
+    base = m.last_seen
+    for t in (1, 1.5, 2):
+        m.observe(base+t, image(), True)
+    m.observe(base+2.5, image(), True, occluded=True)
+    m.observe(base+3, image(), True)
+    m.observe(base+3.5, image(), True)
+    assert not m.alert
+    for t in (4, 4.5, 5, 5.5):
+        m.observe(base+t, image(), True)
+    assert m.alert

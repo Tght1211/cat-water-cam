@@ -1,7 +1,7 @@
 """单个事件流的变更指纹；数据库未变化时不重复查询，不将监控采样当业务变更。"""
 import hashlib
 import json
-import sqlite3
+from catcam.database import connect
 from pathlib import Path
 
 TABLES=('events','labels','dispenser','water_readings','water_calibration','water_cycles',
@@ -24,7 +24,7 @@ class DataRevision:
             stamp=tuple(stamps)
             if path not in self.cache or self.cache[path][0]!=stamp:
                 digest=hashlib.sha256()
-                with sqlite3.connect(path) as conn:
+                with connect(path) as conn:
                     tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                     for name in TABLES:
                         if name not in tables:continue

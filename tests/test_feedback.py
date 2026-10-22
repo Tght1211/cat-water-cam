@@ -123,3 +123,39 @@ def test_dry_lick_is_action_positive_but_no_intake(tmp_path):
     store.label_clip(clip,False,outcome='no_action')
     assert _labeled_clips(store)==[(clip.name,0)]
     assert not list((tmp_path/'training'/'drinking').glob('*.jpg'))
+
+
+def test_extract_long_video_decodes_only_requested_frames(tmp_path, monkeypatch):
+    import catcam.feedback as module
+    reads, seeks = [], []
+    class Capture:
+        released = False
+        def __init__(self, path): pass
+        def get(self, prop): return 30000
+        def set(self, prop, value):
+            seeks.append(value)
+            return True
+        def read(self):
+            reads.append(1)
+            return True, np.zeros((48, 64, 3), dtype=np.uint8)
+        def release(self): self.released = True
+    cap = Capture(None)
+    monkeypatch.setattr(module.cv2, 'VideoCapture', lambda path: cap)
+    paths = extract_frames(tmp_path/'long.mp4', tmp_path/'frames', 5)
+    assert len(paths) == len(reads) == 5
+    assert seeks == [6000, 12000, 18000, 24000]
+    assert cap.released
+
+
+def test_sparse_extraction_preserves_sample_positions(tmp_path):
+    import cv2
+    from catcam.recorder import open_writer
+    path = tmp_path/'color.mp4'
+    writer = open_writer(path, 10, (64, 48))
+    for i in range(30):
+        writer.write(np.full((48, 64, 3), i*8, dtype=np.uint8))
+    writer.release()
+    paths = extract_frames(path, tmp_path/'frames', 5)
+    means = [cv2.imread(str(p)).mean() for p in paths]
+    assert len(means) == 5
+    assert all(abs(value - expected) < 8 for value, expected in zip(means, [0, 48, 96, 144, 192]))

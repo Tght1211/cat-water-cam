@@ -32,11 +32,12 @@ class Pipeline:
         """把帧放进回放缓冲。由采集线程按帧率调用，与检测解耦，保证录制连贯。"""
         self.frame_buffer.add(now, frame)
 
-    def cat_in_bowl(self, frame, night: bool = False) -> bool:
+    def cat_in_bowl(self, frame, night: bool = False, cats=None) -> bool:
         """猫是否在水碗里：YOLO 认猫（框压 ROI）或简单模型命中。纯判断，不录制。"""
         height, width = frame.shape[:2]
         bowl = ratio_rect_to_pixels(self.bowl_roi_ratio, width, height)
-        cats = self.cat_detector.detect_cats(frame)
+        if cats is None:
+            cats = self.cat_detector.detect_cats(frame)
         cat_in_roi = any(
             cat_overlaps_bowl(c, bowl, self.min_overlap_ratio) for c in cats
         )

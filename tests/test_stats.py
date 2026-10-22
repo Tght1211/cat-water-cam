@@ -70,30 +70,69 @@ def test_drinking_records_minimum_interval_and_boundaries(tmp_path):
     db = tmp_path / 't.db'
     store = StatsStore(db)
     # 59 秒归同次；恰好 60 秒可记下一次；重复事件不能重复计数。
-    for ts, name in [(100, 'a'), (115, 'b'), (159, 'c'), (160, 'd'), (219, 'e'), (220, 'f')]:
+    for ts, name in [(100, 'a'), (115, 'b'), (159, 'c'), (160, 'd'), (219, 'e'), (220, 'f'), (280, 'g')]:
         store.record_event(ts, name)
         _label(db, name, True)
     store.record_event(101, 'a')
-    assert [e['ts'] for e in store.drinking_records()] == [100, 160, 220]
-    assert store.count_between(0, 300) == 3
+    assert [e['ts'] for e in store.drinking_records()] == [100, 280]
+    assert store.count_between(0, 300) == 2
     assert store.events_between(110, 160) == []
-    assert store.count_between(0, 160) + store.count_between(160, 300) == 3
+    assert store.count_between(0, 160) + store.count_between(160, 300) == 2
     # 改判会重新计算，原始片段/标注均保留。
     _label(db, 'a', False)
-    assert [e['ts'] for e in store.drinking_records()] == [115, 219]
-    assert len(store.clip_metadata()) == 6
+    assert [e['ts'] for e in store.drinking_records()] == [115, 280]
+    assert len(store.clip_metadata()) == 7
 
 
 def test_drinking_interval_across_midnight(tmp_path):
     db = tmp_path / 't.db'
     store = StatsStore(db)
     midnight = datetime(2026, 10, 13).timestamp()
-    for delta, name in [(-20, 'a'), (10, 'b'), (40, 'c')]:
+    for delta, name in [(-20, 'a'), (10, 'b'), (40, 'c'), (100, 'd')]:
         store.record_event(midnight + delta, name)
         _label(db, name, True)
     assert store.count_between(midnight - 86400, midnight) == 1
     assert store.count_between(midnight, midnight + 86400) == 1
-    assert store.events_between(midnight, midnight + 86400)[0]['clip_name'] == 'c'
+    assert store.events_between(midnight, midnight + 86400)[0]['clip_name'] == 'd'
+
+
+def test_continuous_drinking_longer_than_a_minute_is_one_visit(tmp_path):
+    db = tmp_path / 't.db'
+    store = StatsStore(db)
+    timestamps = [100 + offset for offset in range(0, 181, 15)]
+    for timestamp in reversed(timestamps):
+        name = f'clip_{timestamp}.mp4'
+        store.record_event(timestamp, name)
+        _label(db, name, True)
+    assert store.count_between(0, 1000) == 1
+    assert store.drinking_records() == [{'ts': 100, 'clip_name': 'clip_100.mp4'}]
+    assert store.events_between(160, 1000) == []
+    assert len(store.clip_metadata()) == len(timestamps)
+
+
+def test_exact_minute_gap_allows_new_visit_without_clock_minute_buckets(tmp_path):
+    db = tmp_path / 't.db'
+    store = StatsStore(db)
+    for timestamp, name in [(119.9, 'a'), (120.1, 'b'), (180.1, 'c')]:
+        store.record_event(timestamp, name)
+        _label(db, name, True)
+    assert [event['clip_name'] for event in store.drinking_records()] == ['a', 'c']
+
+
+def test_non_drinking_and_duplicate_events_do_not_extend_visit(tmp_path):
+    db = tmp_path / 't.db'
+    store = StatsStore(db)
+    for timestamp, name, drinking in [(100, 'a', True), (140, 'negative', False),
+                                      (150, 'pending', None), (160, 'b', True)]:
+        store.record_event(timestamp, name)
+        if drinking is not None:
+            _label(db, name, drinking)
+    store.record_event(155, 'a')
+    assert [event['clip_name'] for event in store.drinking_records()] == ['a', 'b']
+    _label(db, 'pending', True)
+    assert [event['clip_name'] for event in store.drinking_records()] == ['a']
+    _label(db, 'pending', False)
+    assert [event['clip_name'] for event in store.drinking_records()] == ['a', 'b']
 
 
 def test_event_bulk_metadata_preserves_latest_prediction_and_review_flags(tmp_path):

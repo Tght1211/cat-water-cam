@@ -40,11 +40,14 @@ def test_each_confirmed_drink_and_restart_dedup(tmp_path):
     since(service,now-60)
     confirm(service,'a.mp4',now)
     confirm(service,'b.mp4',now+1)
+    confirm(service,'c.mp4',now+61)
     confirm(service,'no.mp4',now+1,False)
     sent=[]
     service.emailer.send=lambda *args: sent.append(args)
     service.tick(now+2)
-    assert len(sent)==2  # No 10-minute throttle.
+    assert len(sent)==2  # 一分钟内的短片不重复发；相隔一分钟的新记录正常发。
+    with service.conn() as c:
+        assert {r[0] for r in c.execute("SELECT key FROM email_jobs WHERE kind='drink'")} == {'drink:a.mp4','drink:c.mp4'}
     restarted=build(tmp_path)
     restarted.emailer.send=lambda *args: sent.append(args)
     restarted.tick(now+5)
@@ -167,3 +170,44 @@ def test_drinking_email_photo_comes_from_video_midpoint(tmp_path):
     image=cv2.imdecode(np.frombuffer(images['photo'],np.uint8),cv2.IMREAD_COLOR)
     assert image[:,:,1].mean()>200  # 5 秒的绿帧，不是开头红帧或结尾蓝帧。
     assert image[:,:,0].mean()<20 and image[:,:,2].mean()<20
+
+
+def test_flow_email_waits_for_three_images_then_sends_in_time_order(tmp_path):
+    import cv2
+    service = build(tmp_path)
+    now = time.time()
+    since(service, now-1)
+    frames = []
+    service.flow.status = lambda *args: {'alert': True, 'fault_since': now, 'changed_at': now}
+    service.flow.evidence = lambda start: frames if start == now else []
+    sent = []
+    service.emailer.send = lambda *args: sent.append(args)
+    service.tick(now)
+    assert not sent
+    for i in range(3):
+        jpg = cv2.imencode('.jpg',np.full((48,64,3),60+i*60,np.uint8))[1].tobytes()
+        frames.append((now+i, jpg))
+    service.tick(now+10)
+    assert len(sent) == 1
+    subject, html, images = sent[0]
+    assert '停止出水' in subject
+    assert list(images) == ['flow-1', 'flow-2', 'flow-3']
+    assert list(images.values()) == [jpg for _, jpg in frames]
+    assert html.index('cid:flow-1') < html.index('cid:flow-2') < html.index('cid:flow-3')
+    assert '2.0 秒内' in html
+    assert all(datetime.fromtimestamp(ts).strftime('%H:%M:%S') in html for ts, _ in frames)
+    service.tick(now+20)
+    assert len(sent) == 1
+
+
+def test_recovered_incident_mail_cannot_be_sent_for_a_later_fault(tmp_path):
+    service = build(tmp_path)
+    now = time.time()
+    since(service, now-1)
+    service.flow.status = lambda *args: {'alert': True, 'fault_since': now, 'changed_at': now}
+    service.discover(now)
+    service.flow.status = lambda *args: {'alert': True, 'fault_since': now+100, 'changed_at': now+100}
+    service.emailer.send = lambda *args: (_ for _ in ()).throw(AssertionError('不能发送旧故障邮件'))
+    service.process(now+100)
+    with service.conn() as c:
+        assert c.execute("SELECT state FROM email_jobs WHERE kind='flow'").fetchone()[0] == 'cancelled'

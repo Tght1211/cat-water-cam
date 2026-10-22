@@ -29,6 +29,8 @@ from catcam.feedback import FeedbackStore
 from catcam.stats import StatsStore, bucket_events, day_bounds
 from catcam.health import health_summary
 from catcam.access import install_access
+from catcam.replay import ReplayArchive
+from urllib.error import HTTPError, URLError
 
 
 def clip_duration(path: Path) -> float:
@@ -49,7 +51,7 @@ def clip_duration(path: Path) -> float:
 # ============================================================================
 STATIC_DIR = Path(__file__).with_name('static')
 INDEX_HTML = STATIC_DIR.joinpath('index.html').read_text(encoding='utf-8')
-for asset in ('app.css', 'app.js'):
+for asset in ('app.css', 'app.js', 'replay.css', 'replay.js'):
     version = hashlib.sha256(STATIC_DIR.joinpath(asset).read_bytes()).hexdigest()[:12]
     INDEX_HTML = INDEX_HTML.replace(f'/static/{asset}', f'/static/{asset}?v={version}')
 
@@ -92,11 +94,58 @@ def create_app(
     mail_update=None,
     indicator_monitor=None,
     reminder_update=None,
+    replay_archive=None,
+    live_status_provider=None,
 ) -> FastAPI:
     app = FastAPI()
     install_access(app,web_password_hash,web_session_secret,access_password_update)
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
     clips_dir = Path(clips_dir)
+    replay_archive = replay_archive or ReplayArchive(recorder, stats, feedback)
+
+    @app.get('/api/live/status')
+    def live_status():
+        return live_status_provider() if live_status_provider else {'connected': None, 'detection_enabled': None}
+
+    @app.get('/api/replay')
+    def replay_catalog():
+        try:
+            return replay_archive.catalog()
+        except (ValueError, OSError, URLError):
+            raise HTTPException(status_code=503, detail='无法读取当前摄像头的滚动录像。请检查 WoSee 服务、所选设备和录像开关；未替换为旧识别片段。') from None
+
+    @app.get('/api/replay/media/{source}/{name:path}')
+    def replay_media(source: str, name: str, request: Request, archive: str | None = None):
+        if source == 'local':
+            path = replay_archive.local_path(name)
+            if path is None:
+                raise HTTPException(status_code=404, detail='录像已被覆盖或不存在')
+            return FileResponse(path, media_type='video/mp4')
+        if source != 'wosee':
+            raise HTTPException(status_code=404, detail='录像来源无效')
+        try:
+            upstream = replay_archive.open_remote(name, archive, request.headers.get('range'))
+        except HTTPError as error:
+            code = error.code
+            error.close()
+            raise HTTPException(status_code=code if code in (404, 409, 416) else 503,
+                                detail='录像已覆盖或目录已改变，请刷新回放') from None
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except (OSError, URLError):
+            raise HTTPException(status_code=503, detail='录像服务暂不可用') from None
+        async def stream():
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(upstream.read, 65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                upstream.close()
+        headers = {key: upstream.headers[key] for key in ('Content-Length', 'Content-Range', 'Accept-Ranges') if key in upstream.headers}
+        headers['Cache-Control'] = 'no-store'
+        return StreamingResponse(stream(), status_code=upstream.status, media_type='video/mp4', headers=headers)
 
     def _estimated_ml(events, calibration):
         total=0
@@ -204,8 +253,19 @@ def create_app(
     @app.get('/api/health')
     def health():
         h = health_summary(stats, monitoring)
+        camera = live_status_provider() if live_status_provider else None
+        if camera is not None:
+            h['camera'] = camera
+        preview = camera is not None and camera.get('detection_enabled') is False
+        if preview:
+            h['status'] = 'preview_only'
+            h['message'] = '当前仅预览摄像头，识别、喝水记录及有效监控覆盖统计未启动。'
+            h['monitoring'] = {'usable': False, 'status': 'preview' if camera['connected'] else 'offline',
+                               'message': '视频已连接，仅预览；识别和监控统计未启动。' if camera['connected'] else '摄像头没有新画面，正在等待恢复。'}
         actions = []
-        if not h['monitoring'].get('usable'):
+        if preview and camera['connected']:
+            actions.append('需要识别喝水时，请启动完整监控。')
+        elif not h['monitoring'].get('usable'):
             actions.append('先检查摄像头和补光，当前无法完整观察饮水。')
         if h['pending_review']:
             actions.append(f"先复核{h['pending_review']}段候选录像，再判断饮水次数变化。")
@@ -566,6 +626,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="未启用模型管理")
         model_id = body.get("id")  # None = 停用，只用简单模型
         mode = body.get("mode") or "shadow"  # 默认测试模式（不拦截录制）
+        if mode not in ("shadow", "gate"):
+            raise HTTPException(status_code=400, detail="请选择测试模式或自动判定模式")
         if model_id is None:
             active_model.clear()
             if video_model_clear is not None:
@@ -575,9 +637,7 @@ def create_app(
             if entry is None:
                 raise HTTPException(status_code=404, detail="没有这个版本")
             if entry and entry.get("base") == "s3d+head":
-                report = entry.get('report')
-                if mode == 'gate' and report is not None and not report.get('auto_label_eligible'):
-                    raise HTTPException(status_code=400, detail='独立测试样本或效果不足，请保持测试模式并补充标注')
+                # 评估不足在版本页提示；用户仍可主动选择自动判定，人工纠错始终保留。
                 if video_model_switch is None:
                     raise HTTPException(status_code=400, detail="当前进程未接入本地视频裁判")
                 try:
@@ -608,8 +668,7 @@ def create_app(
         times = [datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S") for e in events]
         return {"count": len(events), "times": times}
 
-    @app.get("/api/clips")
-    def clips():
+    def clip_list_data(include_records=True):
         names = [p.name for p in recorder.list_clips()]
         stored = feedback.clip_metadata()
         events = stats.clip_metadata()
@@ -617,14 +676,13 @@ def create_app(
         labels = {n: m['is_drinking'] if m else None for n, m in meta.items()}
         prediction_details = {n: dict(events[n]['prediction']) for n in names
                               if 'prediction' in events.get(n, {})}
-        thresholds = {}
+        thresholds = {entry['id']: ((entry.get('report') or {}).get('threshold', .5))
+                      for entry in registry.list()} if registry is not None and prediction_details else {}
         for detail in prediction_details.values():
             version = detail['by']
-            if version not in thresholds:
-                entry = registry.get(version) if registry is not None else None
-                thresholds[version] = ((entry or {}).get('report') or {}).get('threshold', .5)
-            detail['threshold'] = thresholds[version]
+            detail['threshold'] = thresholds.get(version, .5)
         return {"clips": names, "labels": labels,
+                "sessions": {n: events[n]['session'] for n in names if 'session' in events.get(n, {})},
                 "durations": {n: round(stored['durations'][n], 1) if n in stored['durations'] else None for n in names},
                 "review_candidates": {n: events.get(n, {}).get('review_candidate', True)
                                       or (meta[n] or {}).get('source') == 'human' for n in names},
@@ -633,11 +691,15 @@ def create_app(
                 "water_review": {n: events.get(n, {}).get('water_review', False) for n in names},
                 "predictions": {n: d['drinking'] for n, d in prediction_details.items()},
                 "prediction_details": prediction_details, "meta": meta,
-                "drinking_records": [e['clip_name'] for e in reversed(stats.drinking_records())],
+                "drinking_records": [e['clip_name'] for e in reversed(stats.drinking_records())] if include_records else [],
                 "min_drinking_interval_seconds": 60,
                 "max_clips": recorder.max_clips,
                 "retention_days": recorder.retention_days,
                 "recording_fps": recorder.fps}
+
+    @app.get("/api/clips")
+    def clips():
+        return clip_list_data()
 
     @app.get('/api/clips/page')
     def clip_page(
@@ -647,7 +709,7 @@ def create_app(
         snapshot: str | None = Query(default=None, pattern=r'^clip_[0-9]+\.mp4$'),
     ):
         # 元数据批量读取，不读取视频。游标避免标注移除后 OFFSET 跳过未看项。
-        data = clips()
+        data = clip_list_data(include_records=False)
         boundary = snapshot or (data['clips'][0] if data['clips'] else 'clip_0.mp4')
         counts = dict.fromkeys(('all', 'review', 'yes', 'no', 'mistakes'), 0)
         matches = []
@@ -659,7 +721,7 @@ def create_app(
             if prediction is None and meta.get('source') != 'human' and meta.get('confidence') is not None:
                 prediction = {'drinking': meta['is_drinking'], 'confidence': meta['confidence'], 'threshold': .5}
             human = meta.get('source') == 'human'
-            pending = not human and (data['water_review'][name] or not meta or not prediction
+            pending = not human and (not meta or not prediction
                 or prediction['confidence'] is None
                 or abs(prediction['confidence'] - prediction.get('threshold', .5)) < .15)
             flags = {'all': True, 'review': pending,
@@ -715,9 +777,10 @@ def create_app(
     # 按文件身份缓存中间帧；缓存有界，录像覆盖后自动失效。
     thumb_cache = OrderedDict()
     thumb_lock = Lock()
+    thumb_decode_locks = [Lock() for _ in range(32)]
 
     @app.get("/clips/{name}/thumb.jpg")
-    def clip_thumb(name: str):
+    def clip_thumb(name: str, request: Request):
         # 用中间帧做封面，比开头的空场/刚入画更有判断价值。
         if "/" in name or "\\" in name or ".." in name:
             raise HTTPException(status_code=400, detail="bad name")
@@ -726,8 +789,15 @@ def create_app(
             raise HTTPException(status_code=404, detail="not found")
         info = path.stat()
         key = (name, info.st_size, info.st_mtime_ns)
-        with thumb_lock:
-            content = thumb_cache.get(key)
+        etag = '"'+hashlib.sha256(repr(key).encode()).hexdigest()[:24]+'"'
+        headers = {"Cache-Control": "private, no-cache", "ETag": etag}
+        if request.headers.get('if-none-match') == etag:
+            return Response(status_code=304, headers=headers)
+        with thumb_decode_locks[hash(name) % len(thumb_decode_locks)]:
+            with thumb_lock:
+                content = thumb_cache.get(key)
+                if content is not None:
+                    thumb_cache.move_to_end(key)
             if content is None:
                 cap = cv2.VideoCapture(str(path))
                 try:
@@ -746,12 +816,12 @@ def create_app(
                 if not ok:
                     raise HTTPException(status_code=500, detail="encode failed")
                 content = buf.tobytes()
-                thumb_cache[key] = content
-                while len(thumb_cache) > 128:
-                    thumb_cache.popitem(last=False)
-            thumb_cache.move_to_end(key)
+                with thumb_lock:
+                    thumb_cache[key] = content
+                    while len(thumb_cache) > 128:
+                        thumb_cache.popitem(last=False)
         return Response(content=content, media_type="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
+                        headers=headers)
 
     @app.get("/clips/{name}")
     def get_clip(name: str, audio: int = 1, download: int = 0):

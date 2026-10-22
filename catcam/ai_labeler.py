@@ -14,7 +14,7 @@ import threading
 import time
 import math
 import hashlib
-import sqlite3
+from catcam.database import connect
 from pathlib import Path
 
 from catcam.feedback import extract_frames
@@ -115,7 +115,7 @@ class AILabeler:
         self.roi_provider = None
         self._label_lock = threading.Lock()
         self._seen = set()
-        with sqlite3.connect(store.db_path) as c:
+        with connect(store.db_path) as c:
             c.execute('CREATE TABLE IF NOT EXISTS ai_annotations (hash TEXT PRIMARY KEY, clip TEXT NOT NULL, result TEXT NOT NULL, ts REAL NOT NULL)')
 
     @classmethod
@@ -187,7 +187,7 @@ class AILabeler:
         fingerprint = hashlib.sha256(clip_path.read_bytes()).hexdigest() if clip_path.exists() else None
         if fingerprint and fingerprint in self._seen:
             return None
-        with sqlite3.connect(self.store.db_path) as c:
+        with connect(self.store.db_path) as c:
             if fingerprint and c.execute('SELECT 1 FROM ai_annotations WHERE hash=?',(fingerprint,)).fetchone():
                 return None
         if self.candidate_check is not None and not self.candidate_check(clip_path):
@@ -222,7 +222,7 @@ class AILabeler:
         result = parse_label(content)
         if fingerprint:
             self._seen.add(fingerprint)
-            with sqlite3.connect(self.store.db_path) as c:
+            with connect(self.store.db_path) as c:
                 c.execute('INSERT OR REPLACE INTO ai_annotations VALUES (?,?,?,?)',
                           (fingerprint,clip_path.name,json.dumps(result,ensure_ascii=False),time.time()))
         if result['drinking'] is None or result['confidence'] is not None and result['confidence'] < .8:

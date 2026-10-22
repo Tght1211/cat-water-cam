@@ -80,13 +80,13 @@ def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mo
     authority = None
     emailed = False
     shadow_pred = None
-    water_review = getattr(stats,'requires_water_review',lambda _:False)(name)
+    # 出水异常只用于设备提醒，不能否决视频里的喝水动作。
 
     if mode == "gate" and local_judge is not None:
         authority = local_judge.judge(clip_path)
         if authority is not None:
             stats.set_prediction(name, int(authority.drinking), local_judge.version, authority.confidence)
-            if authority.uncertain or water_review and authority.drinking:
+            if authority.uncertain:
                 authority = None
         if authority is not None:
             written = feedback.record_machine_label(
@@ -106,14 +106,11 @@ def route_clip(*, clip_path, start_ts: float, photo, ai_labeler, local_judge, mo
                     name, int(v.drinking), local_judge.version, v.confidence
                 )
                 shadow_pred = v.drinking
-                if authority is None and auto_confirm_extremes and is_extreme_verdict(v) and not (water_review and v.drinking):
+                if authority is None and auto_confirm_extremes and is_extreme_verdict(v):
                     if feedback.record_machine_label(name,v.drinking,source='local',confidence=v.confidence,
                                                      reason='两端高分自动确认；可抽查纠错'):
                         authority=v
 
-    if water_review and authority is not None and authority.drinking:
-        authority = None
     if authority is not None and authority.drinking and photo is not None:
-        emailer.notify_drinking(stats, photo, datetime.fromtimestamp(start_ts))
-        emailed = True
+        emailed = bool(emailer.notify_drinking(stats, photo, datetime.fromtimestamp(start_ts)))
     return {"authority": authority, "emailed": emailed, "shadow_pred": shadow_pred}

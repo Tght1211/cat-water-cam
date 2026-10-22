@@ -93,3 +93,23 @@ def test_mux_audio_into_fail_open_on_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(audio.subprocess, "run", timeout)
     assert mux_audio_into(v, b"\x00\x00", timeout_seconds=0.01) is False
     assert v.read_bytes() == b"video"
+
+
+def test_short_audio_does_not_truncate_session_video(tmp_path):
+    import shutil
+    import cv2
+    import numpy as np
+    import pytest
+    if shutil.which('ffmpeg') is None:
+        pytest.skip('本机没有 ffmpeg')
+    path = tmp_path / 'session.mp4'
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), 10, (64, 48))
+    assert writer.isOpened()
+    for _ in range(40):
+        writer.write(np.zeros((48, 64, 3), np.uint8))
+    writer.release()
+    # 四秒视频只有半秒声音，合成后仍必须保留完整四秒视频。
+    assert mux_audio_into(path, b'\x00\x00' * 8000, 16000)
+    cap = cv2.VideoCapture(str(path))
+    assert cap.get(cv2.CAP_PROP_FRAME_COUNT) == 40
+    cap.release()

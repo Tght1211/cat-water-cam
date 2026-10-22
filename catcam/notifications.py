@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta
 from html import escape
 import json
-import sqlite3
+from catcam.database import connect
 import threading
 import time
 
@@ -28,7 +28,7 @@ class EmailNotifications:
         self.last_fault = False
 
     def conn(self):
-        return sqlite3.connect(self.db_path)
+        return connect(self.db_path)
 
     def ready(self):
         return bool(self.cfg.mail_enabled and self.cfg.smtp_host and self.cfg.smtp_user and self.cfg.smtp_password and self.cfg.mail_to)
@@ -66,8 +66,11 @@ class EmailNotifications:
         with self.conn() as c:
             since = c.execute("SELECT value FROM email_meta WHERE key='enabled_since'").fetchone()[0]
             rows = c.execute('SELECT e.clip_name, MIN(e.ts) FROM events e JOIN labels l ON e.clip_name=l.clip_name WHERE l.is_drinking=1 AND l.ts>=? AND e.candidate_only=0 GROUP BY e.clip_name', (since,)).fetchall()
+        # 邮件与喝水模块使用同一份一分钟去重结果，避免短片段各发一封。
+        records = {e['clip_name'] for e in self.stats.drinking_records()}
         for clip, ts in rows:
-            self.enqueue('drink:'+clip, 'drink', {'clip':clip,'ts':ts},now)
+            if clip in records:
+                self.enqueue('drink:'+clip, 'drink', {'clip':clip,'ts':ts},now)
         local = datetime.fromtimestamp(now)
         due = local.replace(hour=23,minute=0,second=0,microsecond=0)
         if local < due:
@@ -79,7 +82,8 @@ class EmailNotifications:
                          {'start':start.timestamp(),'end':due.timestamp()},now)
         status = self.flow.status(now)
         if status['alert'] and not self.last_fault:
-            self.enqueue('flow:'+str(status.get('fault_since') or status['changed_at']), 'flow', {'ts':now},now)
+            incident_start = status.get('fault_since') or status['changed_at']
+            self.enqueue('flow:'+str(incident_start), 'flow', {'ts':now, 'incident_start':incident_start},now)
         self.last_fault = status['alert']
 
         reminder = self.water_reminder(now)
@@ -102,6 +106,7 @@ class EmailNotifications:
 
     def build(self, kind, payload):
         images = {}
+        gallery = ''
         if kind == 'drink':
             dt = datetime.fromtimestamp(payload['ts'])
             subject = '🐱 已确认一次喝水 · '+dt.strftime('%m月%d日 %H:%M')
@@ -147,15 +152,33 @@ class EmailNotifications:
             subject = '⚠️ 饮水机疑似停止出水'
             diagnosis = self.dispenser.flow_diagnosis(self.stats, time.time())
             detail = '出水口与停止出水参考相符。'+diagnosis['cause_message']
+            evidence = self._flow_evidence(payload)
+            if len(evidence) < 3:
+                raise ValueError('停水提醒需要三张连续现场图片')
+            span = evidence[-1][0]-evidence[0][0]
+            gallery = f'<p>以下为约 {span:.1f} 秒内连续采集的三张现场画面，请结合出水口变化判断是否真的停水。</p>'
+            for i, (ts, jpg) in enumerate(evidence):
+                cid = f'flow-{i+1}'
+                images[cid] = jpg
+                stamp = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                gallery += (f'<figure style="margin:16px 0"><figcaption>第 {i+1} 张 · {stamp}'
+                            f'（+{ts-evidence[0][0]:.1f} 秒）</figcaption>'
+                            f'<img src="cid:{cid}" alt="第 {i+1} 张停水现场" '
+                            'style="max-width:640px;width:100%;height:auto"></figure>')
         else:
             subject = '喵喵水站 · 测试邮件'
             detail = '邮箱连接成功。每次确认喝水都会提醒；每天 23:00 汇总，周日同一时间改发本周汇总。'
         url = escape(self.emailer.lan_url(), quote=True)
         html = f'<html><body style="font-family:Arial,sans-serif;line-height:1.8;padding:24px"><h2>{escape(subject)}</h2><p>{escape(detail)}</p>'
-        if images:
+        if gallery:
+            html += gallery
+        elif images:
             html += '<img src="cid:photo" style="max-width:560px;width:100%">'
         html += f'<p><a href="{url}">打开喵喵水站</a>（需连接同一局域网）</p></body></html>'
         return subject,html,images
+
+    def _flow_evidence(self, payload):
+        return getattr(self.flow, 'evidence', lambda _: [])(payload.get('incident_start', payload['ts']))
 
     def process(self, now):
         if not self.ready():
@@ -164,15 +187,28 @@ class EmailNotifications:
             jobs = c.execute("SELECT key,kind,payload,attempts FROM email_jobs WHERE state='pending' AND next_try<=? ORDER BY next_try LIMIT 5", (now,)).fetchall()
         for key,kind,data,attempts in jobs:
             payload = json.loads(data)
+            if kind == 'flow' and 'incident_start' not in payload:
+                # 兼容升级前已排队的停水提醒，仍按原事件读取图片。
+                payload['incident_start'] = float(key.split(':', 1)[1])
             if kind == 'drink':
                 meta = self.feedback.label_meta(payload['clip']) or {}
-                if meta.get('is_drinking') is not True:
+                records = {e['clip_name'] for e in self.stats.drinking_records()}
+                if meta.get('is_drinking') is not True or payload['clip'] not in records:
                     with self.conn() as c:
                         c.execute("UPDATE email_jobs SET state='cancelled' WHERE key=?",(key,))
                     continue
-            if (kind == 'flow' and not self.flow.status()['alert']) or (kind=='water_low' and not self.water_reminder(now)['need_water']):
+            flow_status = self.flow.status() if kind == 'flow' else None
+            obsolete_flow = flow_status is not None and (
+                not flow_status['alert'] or
+                (flow_status.get('fault_since') or flow_status.get('changed_at')) != payload['incident_start'])
+            if obsolete_flow or (kind=='water_low' and not self.water_reminder(now)['need_water']):
                 with self.conn() as c:
                     c.execute("UPDATE email_jobs SET state='cancelled' WHERE key=?",(key,))
+                continue
+            if kind == 'flow' and len(self._flow_evidence(payload)) < 3:
+                with self.conn() as c:
+                    c.execute("UPDATE email_jobs SET next_try=?,error=? WHERE key=?",
+                              (now+10, '正在采集停水现场的三张连续图片', key))
                 continue
             try:
                 self.emailer.send(*self.build(kind,payload))

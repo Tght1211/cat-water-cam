@@ -15,7 +15,7 @@ window.applyAppearance=function(){
 applyAppearance();
 </script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🐱%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="/static/app.css"></head>
+<link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/replay.css"></head>
 <body>
 <div class="blob b1"></div><div class="blob b2"></div>
 
@@ -78,12 +78,14 @@ applyAppearance();
     </div></div>
     <div class="card sp5 an" style="--i:2"><div class="card-h">实时画面</div><div class="card-b">
       <div class="live-frame" onclick="openLive()">
-        <img id="live" src="/stream.mjpg" alt="实时画面" onerror="if(this.getAttribute('src')&&!document.hidden&&location.hash!=='#/disp'&&document.querySelector('#pg-home').classList.contains('on'))this.src='/snapshot.jpg?t='+Date.now()">
+        <img id="live" src="/stream.mjpg" alt="实时画面">
         <span class="live-tag"><span class="live-dot"></span>LIVE</span>
         <span class="live-quality" id="liveQuality" hidden></span>
         <button class="live-zoom" aria-label="放大" onclick="event.stopPropagation();openLive()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg></button>
       </div>
+      <button class="btn ghost" style="margin-top:12px" onclick="openSceneSetup('flow')">框选出水口</button>
+      <button class="btn ghost" onclick="go('disp')">出水监测与校准</button>
     </div></div>
     <div id="storageCard" class="card sp3 storage-card an" style="--i:3" role="button" tabindex="0" aria-label="查看饮水机水量与设备记录" onclick="go('disp')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();go('disp');}">
       <div class="storage-water" aria-hidden="true"><svg class="storage-wave" viewBox="0 0 600 32" preserveAspectRatio="none"><path d="M0 16 Q75 0 150 16 T300 16 T450 16 T600 16 V32 H0Z"/></svg><div class="storage-bubbles"></div></div>
@@ -138,9 +140,18 @@ applyAppearance();
 </section>
 
 <section id="pg-replay" class="pg">
-  <div class="ph"><div><h1>回放</h1><p>画面变化就录下，普通录像不占用待复核队列。视频滚动保留 3 天。</p></div><button class="btn ghost" onclick="loadReplay()">刷新回放</button></div>
-  <p class="note" id="replayCount"></p>
-  <div class="clips" id="replayClips"></div>
+  <div class="ph"><div><h1>监控回放</h1><p>沿时间轴回看现场，喝水与复核记录同步显示。</p></div><button class="btn ghost" id="replayRefresh">刷新时间轴</button></div>
+  <div class="archive-head"><div><span class="archive-dot"></span><strong id="replaySource">正在读取录像源</strong></div><span id="replayCount" class="note"></span></div>
+  <div class="archive-workspace">
+  <section class="archive-player"><div class="archive-stage"><video id="archiveVideo" playsinline muted preload="metadata" hidden></video><div id="archiveEmpty"><span>◷</span><strong>沿时间，回到现场。</strong><p>正在读取滚动录像目录…</p></div><span id="archiveClock" class="archive-clock" hidden></span></div>
+    <div class="archive-controls"><button class="btn" id="archivePlay" disabled aria-label="播放回放">播放</button><button class="btn ghost" id="archiveBack" disabled>−10 秒</button><button class="btn ghost" id="archiveForward" disabled>＋10 秒</button><span id="archivePosition">尚未选择时间</span><label class="archive-rate">倍速<select id="archiveRate" aria-label="回放速度"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label><button class="btn ghost" id="archiveFullscreen" aria-label="全屏回放">⛶</button></div>
+  </section>
+  <section class="archive-timeline-panel"><div class="archive-timeline-head"><div><span class="archive-kicker">录像时间轴</span><strong id="archiveWindow">等待录像</strong></div><div class="archive-locate"><input id="archiveDate" type="datetime-local" step="1" aria-label="回放日期与时间"><button class="btn ghost" id="archiveLocate">定位</button><select id="archiveZoom" aria-label="时间轴范围"><option value="3600">1 小时</option><option value="21600">6 小时</option><option value="86400">24 小时</option><option value="all" selected>全部录像</option></select></div></div>
+    <div class="archive-track"><canvas id="archiveTimeline" height="102" aria-hidden="true"></canvas><input id="archiveSeek" type="range" min="0" max="1" value="0" step="0.1" aria-label="拖动定位监控录像时间" disabled><output id="archiveHover" hidden></output></div>
+    <div class="archive-axis"><span id="archiveStart">—</span><span id="archiveEnd">—</span></div><div class="archive-legend"><span><i class="archive-recorded"></i>可回放录像</span><span><i class="archive-drink"></i>确认喝水</span><span><i class="archive-review"></i>待复核</span><span><i class="archive-gap"></i>未录制 / 已覆盖</span></div><p id="archiveState" class="note" role="status">拖动时间轴或点击记录定位，播放器会自动接播后续录像。</p>
+  </section>
+  <section class="archive-events-panel"><div class="archive-events-head"><div><span class="archive-kicker">发生了什么</span><h2>时间轴上的记录 <small id="archiveEventCount"></small></h2></div><select id="archiveEventFilter" aria-label="筛选回放记录"><option value="all">全部记录</option><option value="drinking">确认喝水</option><option value="review">待复核</option></select></div><div id="archiveEvents" class="archive-events"></div><button class="btn ghost" id="archiveMore" hidden>查看更多记录</button></section>
+  </div>
 </section>
 
 <!-- ============ 实验室 ============ -->
@@ -189,4 +200,4 @@ applyAppearance();
     <stop offset="0" stop-color="var(--aqua)"/><stop offset="1" stop-color="var(--aqua2)"/></linearGradient>
 </defs></svg>
 
-<script src="/static/app.js" defer></script></body></html>
+<script src="/static/replay.js" defer></script><script src="/static/app.js" defer></script></body></html>

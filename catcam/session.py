@@ -23,6 +23,9 @@ class SessionResult:
     audio_start: float = 0.0  # 该段对应的音频窗口起点（回溯了 preroll），供 mux 切片
     audio_end: float = 0.0    # 音频窗口终点（收尾时刻）
     candidate_only: bool = False
+    presence_start: float | None = None  # 水碗区域首次持续在场；不是逐帧舔水标注
+    presence_end: float | None = None    # 最后一次在场；不含离开宽限
+    end_reason: str = "left"
 
 
 class DrinkSession:
@@ -48,6 +51,9 @@ class DrinkSession:
         self._photo = None
         self._audio_start: float = 0.0
         self._candidate_only=False
+        self._presence_start = None
+        self._last_frame_at = 0.0
+        self._await_leave = False
 
     @property
     def recording(self) -> bool:
@@ -56,25 +62,31 @@ class DrinkSession:
     def update(self, now, frame, in_roi, in_roi_since, frame_buffer, candidate_only=False) -> SessionResult | None:
         """采集线程每帧（按 fps 节奏）调用。返回非 None 表示刚收尾了一段会话。"""
         if self._writer is None:
+            # 达到手动设置的时长上限后，必须先离场，不能把同一次喝水切成多次。
+            if self._await_leave:
+                if not in_roi:
+                    self._await_leave = False
+                return None
             if now < self._cooldown_until:
                 return None
             # 猫已在水碗持续够久 → 开录
             if in_roi and in_roi_since is not None and now - in_roi_since >= self.dwell_seconds:
                 self._begin(now, frame, frame_buffer)
+                self._presence_start = in_roi_since
                 self._candidate_only=candidate_only
             return None
 
         # 录制中：写当前帧
         self._writer.write(frame)
+        self._last_frame_at = now
         self._candidate_only |= candidate_only
         if in_roi:
             self._last_present = now
-        ended = (
-            now - self._last_present >= self.end_grace_seconds
-            or now - self._start >= self.max_session_seconds
-        )
-        if ended:
-            return self._finish(now)
+        left = not in_roi and now - self._last_present >= self.end_grace_seconds
+        capped = self.max_session_seconds > 0 and now - self._start >= self.max_session_seconds
+        if left or capped:
+            self._await_leave = capped and not left and self.cooldown_seconds > 0
+            return self._finish(now, "left" if left else "limit")
         return None
 
     def _begin(self, now, frame, frame_buffer) -> None:
@@ -87,20 +99,24 @@ class DrinkSession:
         for f in preroll_frames:
             self._writer.write(f)
         self._start = now
+        self._last_frame_at = now
         self._last_present = now
         self._photo = frame
         # 音频窗口起点：从开录时刻回溯 preroll 帧对应的时长（帧按 fps 节奏），与视频开头对齐。
         self._audio_start = now - len(preroll_frames) / max(1, self.recorder.fps)
 
-    def _finish(self, now) -> SessionResult:
+    def _finish(self, now, reason="left") -> SessionResult:
         self._writer.release()
         self._writer = None
         self._writing_path.replace(self._path)
         self._writing_path = None
         self.recorder.prune()
-        self._cooldown_until = now + self.cooldown_seconds
+        # 一分钟从本次触发算起；录制中的会话始终持续到离开，不受冷却截断。
+        self._cooldown_until = self._start + self.cooldown_seconds
         res = SessionResult(timestamp=self._start, clip_name=self._path.name, photo=self._photo,
-                            audio_start=self._audio_start, audio_end=now,candidate_only=self._candidate_only)
+                            audio_start=self._audio_start, audio_end=now,candidate_only=self._candidate_only,
+                            presence_start=self._presence_start, presence_end=self._last_present,
+                            end_reason=reason)
         self._path = None
         self._photo = None
         return res
@@ -109,4 +125,5 @@ class DrinkSession:
         """进程退出时收尾未完成的录制（避免半截文件丢失）。"""
         if self._writer is None:
             return None
-        return self._finish(self._last_present)
+        self._await_leave = True
+        return self._finish(self._last_frame_at, "interrupted")

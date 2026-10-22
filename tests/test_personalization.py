@@ -202,3 +202,30 @@ def test_weak_contour_recording_cannot_be_auto_confirmed_on_recheck(tmp_path):
     review=ModelReview(Runtime(),s,f,Recorder(),lambda:True);review._run(judge,'gate')
     assert review.status()['state']=='done'
     assert f.get_label('weak.mp4') is None
+
+
+@pytest.mark.parametrize('mode', ['gate', 'shadow'])
+def test_recheck_water_alert_does_not_block_drinking_confirmation(tmp_path, mode):
+    from catcam.model_review import ModelReview
+    from catcam.judge import Verdict
+    from pathlib import Path
+    s = StatsStore(tmp_path/'db')
+    f = FeedbackStore(tmp_path/'db', tmp_path/'training')
+    s.record_event(100, 'drink.mp4')
+    s.set_water_review('drink.mp4', True)
+    class Judge:
+        version = 'v2'
+        def judge(self, path):
+            return Verdict(True, 1.0, '持续舔水', self.version)
+    judge = Judge()
+    class Runtime:
+        def snapshot(self):
+            return judge, mode
+    class Recorder:
+        def list_clips(self):
+            return [Path('drink.mp4')]
+    review = ModelReview(Runtime(), s, f, Recorder(), lambda: True)
+    review._run(judge, mode)
+    assert review.status()['state'] == 'done'
+    assert f.get_label('drink.mp4') is True
+    assert s.count_between(0, 200) == 1

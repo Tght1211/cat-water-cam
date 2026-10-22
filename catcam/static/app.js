@@ -105,6 +105,7 @@ function show(p){
   if(p==='disp')loadDispenser();
   if(p==='records')loadRecords();
   if(p==='replay')loadReplay();
+  else pauseReplay();
   if(p==='trend')renderTrend();
   if(p==='lab')loadLabelClips();
 }
@@ -458,19 +459,6 @@ async function checkClipUpdates(){
   const count=summary.new_count??summary.review_names.filter(n=>!known.has(n)).length;
   $('#reviewRefresh').textContent=count?`刷新 · ${count} 个新视频`:'刷新';
 }
-let replayPage=1;
-async function loadReplay(){try{await fetchClips();replayPage=1;renderReplay();}catch(e){clipLoadError('#replayClips','loadReplay');}}
-function renderReplay(){
-  const names=clipsData?.clips||[],shown=names.slice(0,replayPage*20);
-  $('#replayCount').textContent=`${names.length} 段 · 滚动保留 ${clipsData.retention_days||3} 天`;
-  $('#replayClips').innerHTML=shown.map(n=>{
-    const jn=JSON.stringify(n),url=encodeURIComponent(n),time=clipTime(n);
-    return `<div class="clip"><video src="/clips/${url}" data-poster="/clips/${url}/thumb.jpg" preload="none" controls playsinline></video>
-      <div class="meta"><strong>${time?esc(dayLabel(time)+' '+hhmmss(time)):'录像'}</strong>
-      <div class="replay-actions"><button class="btn ghost" onclick='promoteReplay(${jn},this)'>加入待复核</button><a class="dlbtn" href="/clips/${url}" download>下载</a></div></div></div>`;
-  }).join('')||(names.length?'':'<div class="empty">最近 3 天暂无录像</div>');
-  if(shown.length<names.length)$('#replayClips').insertAdjacentHTML('beforeend',`<button class="more" onclick="replayPage++;renderReplay()">加载更多 · 还有 ${names.length-shown.length} 段</button>`);
-}
 async function promoteReplay(clip,button){
   const response=await fetch(`/api/clips/${encodeURIComponent(clip)}/review`,{method:'POST'});
   if(!response.ok){toast('操作失败，请重试','err');return;}
@@ -544,7 +532,7 @@ function renderRecords(){
   if(!clipsData)return;
   const box=$('#recGrid'),items=recItems();
   const cnt=$('#recCount');
-  cnt.style.display='inline-flex';cnt.innerHTML=`<i></i>共 ${items.length} 次确认喝水 · 间隔至少 1 分钟`;
+  cnt.style.display='inline-flex';cnt.innerHTML=`<i></i>共 ${items.length} 次确认喝水 · 相邻片段不足 1 分钟合并计数`;
   if(!items.length){
     box.innerHTML=`<div class="empty" style="grid-column:1/-1"><span class="eico">🐟</span>
       还没有确认喝水的回放～<br>喵喵来水碗喝水会自动录像，AI 判定「真喝水」后就会出现在这里。</div>`;
@@ -646,14 +634,12 @@ function needsReview(n){
   if(!isReviewCandidate(n))return false;
   const m=(clipsData.meta||{})[n];
   if(m&&m.source==='human')return false;
-  if(clipsData.water_review?.[n])return true;
   if(!m)return true; // 测试模式的高分预测也需人工确认，才能进入饮水记录
   const p=modelDetail(n);
   // 旧的影子预测没有保存概率，但已有明确结论；留在「全部」供抽查，不重复塞满复核队列。
   return !p||p.confidence==null||Math.abs(p.confidence-(p.threshold??.5))<.15;
 }
 function modelTag(n){
-  if(clipsData.water_review?.[n]&&clipsData.meta?.[n]?.source!=='human')return '<span class="tag warn">出水异常 · 请确认是否实际喝到水</span>';
   if(clipsData.candidate_only?.[n])return `<span class="mpred n">弱光轮廓候选 · 请确认喝水动作</span>`;
   const p=modelDetail(n);
   if(!p)return `<span class="tag mute"><i></i>模型未判断</span>`;
@@ -715,11 +701,11 @@ function appendLabelMore(){
   if(labState.cursor)$('#labelClips').insertAdjacentHTML('beforeend','<button class="more" onclick="loadMoreLabelClips(this)">加载更多</button>');
 }
 async function refreshLabelCounts(){
-  const generation=labState.generation;
+  const generation=labState.generation,revision=reviewMutation;
   const params=new URLSearchParams({filter:labelFilter,limit:'1'});
   if(labState.snapshot)params.set('snapshot',labState.snapshot);
   try{const response=await fetch('/api/clips/page?'+params);if(!response.ok)return;
-    const data=await response.json();if(generation!==labState.generation)return;
+    const data=await response.json();if(generation!==labState.generation||revision!==reviewMutation)return;
     labState.counts=data.counts;updateLabelChipCounts();
   }catch(e){}
 }
@@ -778,6 +764,17 @@ async function saveDrinkDuration(clip){
   const r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clip,is_drinking:true,drinking_seconds:seconds})});
   const d=await r.json();if(!r.ok){toast(d.detail,'err');return;}closeModal();await loadLabelClips(false);loadDispenser();toast('喝水动作时长已记录');
 }
+// 连续复核只合并刷新计数，不为每次点击重拉总览、周趋势等隐藏页面数据。
+let reviewMutation=0,reviewRefreshTimer=null,reviewRefreshRunning=false,reviewRefreshDirty=false;
+function scheduleReviewRefresh(){
+  reviewRefreshDirty=true;
+  if(reviewRefreshTimer||reviewRefreshRunning)return;
+  reviewRefreshTimer=setTimeout(async()=>{
+    reviewRefreshTimer=null;reviewRefreshRunning=true;reviewRefreshDirty=false;
+    try{await Promise.allSettled([refreshLabelCounts(),checkClipUpdates()]);}
+    finally{reviewRefreshRunning=false;if(reviewRefreshDirty)scheduleReviewRefresh();}
+  },400);
+}
 async function fb(clip,is){
   const card=$(`#labelClips .clip[data-name="${CSS.escape(clip)}"]`);
   card?.querySelectorAll('.seg2 button').forEach(b=>b.disabled=true);
@@ -785,13 +782,19 @@ async function fb(clip,is){
     const response=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clip,is_drinking:is})});
     const result=await response.json();
     if(!response.ok)throw Error(result.detail||'保存失败');
+    const wasPending=needsReview(clip);
+    reviewMutation++;
     clipsData.labels[clip]=is;clipsData.meta[clip]=result.meta;
+    if(wasPending&&labState.counts){labState.counts.review=Math.max(0,labState.counts.review-1);updateLabelChipCounts();}
     if(card){
       if(labelItems().includes(clip))card.outerHTML=labelCard(clip,0);
       else card.remove();
     }
-    refreshLabelCounts();checkClipUpdates();
-    toast(is?'已确认：喝了':'已确认：没喝');loadStats();
+    scheduleReviewRefresh();
+    // 快复核完当前页时自动补下一页，保留其他视频的播放状态。
+    const more=$('#labelClips .more');
+    if(labelItems().length<=4&&more&&!labState.busy)loadMoreLabelClips(more);
+    toast(is?'已确认：喝了':'已确认：没喝');
   }catch(error){toast(error.message||'保存失败，请重试','err');}
   finally{card?.querySelectorAll('.seg2 button').forEach(b=>b.disabled=false);}
 }
@@ -915,7 +918,7 @@ function renderActive(s){
   const m=(s.models||[]).find(x=>x.id===s.active),mode=s.active_mode||'shadow',hr=s.hitrate;
   if(!m){box.innerHTML=`<div class="studio-active-empty"><span class="studio-model-mark">${I.info}</span><div><h3>尚未启用专属模型</h3><p>当前使用基础检测录制候选，完成训练后可在这里启用新版本。</p></div><button class="btn ghost" onclick="setLab('train',$('#labTabs').children[1])">准备训练</button></div>`;return;}
   box.innerHTML=`<div class="studio-active-summary"><div class="studio-model-identity"><span class="studio-model-mark">${I.check}</span><div><h3>${esc(m.id)} <span>生效中</span></h3><p>${esc(m.report?.backend||'预置动作模型')} · ${m.created_ts?fmtTime(m.created_ts):'预置版本'}</p></div></div><div class="studio-active-metric"><span>${m.report?'独立测试准确率':'发布评估准确率'}</span><strong>${fmtAcc(m.top1)}</strong></div><div class="studio-active-metric"><span>人工复核命中率</span><strong>${hr?.total?fmtAcc(hr.rate):'—'}</strong><small>${hr?.total?`${hr.correct} / ${hr.total} 段`:'等待新片段人工复核'}</small></div></div>
-    <div class="studio-mode-row"><div class="seg-ctl"><button class="${mode==='shadow'?'on':''}" onclick="activate('${esc(m.id)}','shadow')">测试模式</button><button class="${mode==='gate'?'on':''}" onclick="activate('${esc(m.id)}','gate')">自动判定模式</button></div><p>${mode==='gate'?'候选照常录制，明确结果自动统计，不确定项保留复核。':'先预测打分，继续录制候选；通过人工复核观察实际效果。'}</p></div>`;
+    <div class="studio-mode-row"><div class="seg-ctl"><button class="${mode==='shadow'?'on':''}" onclick="activate('${esc(m.id)}','shadow')">测试模式</button><button class="${mode==='gate'?'on':''}" onclick="activate('${esc(m.id)}','gate')">自动判定模式</button></div><p>${mode==='gate'?'录像结束后，模型确认喝水即自动加入喝水记录并发送邮件（需开启邮件），不确定项保留复核。':'先预测打分，继续录制候选；通过人工复核观察实际效果。'}</p></div>`;
 }
 function renderModels(s){
   const box=$('#modelList');if(!box)return;
@@ -1020,10 +1023,11 @@ async function saveAISetup(){
 let sceneROI=null,sceneTarget="bowl";
 async function openSceneSetup(target="bowl"){
   sceneTarget=target;
-  const setup=await (await fetch('/api/setup')).json();if(!setup.enabled){toast('当前入口没有场景设置','err');return;}
+  if(target==='flow')dispData=await (await fetch('/api/dispenser')).json();
+  const setup=await (await fetch('/api/setup')).json();if(target!=='flow'&&!setup.enabled){toast('当前入口没有场景设置','err');return;}
   sceneROI=target==="flow"?dispData?.flow?.roi:setup.bowl_roi;
   if(!sceneROI){toast("请先加载饮水机状态","err");return;}
-  openModal(`<h3>${target==="flow"?"框选出水口和附近水面":"框选饮水盆和猫头动作区域"}</h3><p class="msub">${target==="flow"?"尽量排除背景和猫咪经过的区域。调整区域会清除旧参考，请重新确认停止和正常出水。":"包含猫嘴和水盆，尽量排除背景。更换相机角度后请重新框选并重训。"}</p>
+  openModal(`<h3>${target==="flow"?"框选出水口":"框选饮水盆和猫头动作区域"}</h3><p class="msub">${target==="flow"?"紧贴出水口和水柱框选（如喷泉冒水处），不要框整个水盆，尽量排除背景和猫咪经过的区域。调整区域会清除旧参考，请重新确认停止和正常出水。":"包含猫嘴和水盆，尽量排除背景。更换相机角度后请重新框选并重训。"}</p>
     <div style="position:relative"><img id="sceneImage" src="/snapshot.jpg?t=${Date.now()}" style="width:100%;display:block"><canvas id="sceneCanvas" style="position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair"></canvas></div>
     <div class="modal-acts"><button class="btn ghost" onclick="closeModal()">取消</button><button class="btn" onclick="saveSceneSetup()">保存区域</button></div>`);
   const img=$('#sceneImage'),canvas=$('#sceneCanvas');
@@ -1041,11 +1045,12 @@ async function saveSceneSetup(){
 }
 async function loadHealth(){
   try{const r=await fetch('/api/health');if(!r.ok)throw new Error('health');const h=await r.json();
-    const liveQuality=$('#liveQuality');if(liveQuality){
+    if(h.camera)renderLiveStatus(h.camera);
+    else {const liveQuality=$('#liveQuality');if(liveQuality){
       liveQuality.hidden=!!h.monitoring.usable;
       const liveTag=$('.live-tag');if(liveTag){liveTag.classList.toggle('offline',h.monitoring.status==='offline');liveTag.innerHTML=h.monitoring.status==='offline'?'<span class="live-dot"></span>重连中':'<span class="live-dot"></span>LIVE';}
       liveQuality.textContent=h.monitoring.status==='offline'?'摄像头连接中断，正在重连…':'画面细节不足，暂停记录';
-    }
+    }}
     const building=h.status==='insufficient_data';
     const days=Math.min(3,h.baseline_days||0);
     const content=`<div class="health-summary"><div class="health-intro"><div class="health-eyebrow">饮水健康<span class="health-stage">${building?'积累数据中':'习惯变化'}</span></div><h3>${building?'了解小猫，从每一天开始':'关注小猫的饮水变化'}</h3><p>${esc(building?'积累 3 天有效监控后，建立专属饮水基线。当前记录仅供观察，尚不能判断健康变化。':h.message)}</p>
@@ -1066,20 +1071,55 @@ bindCardFx($('#recGrid')); bindCardFx($('#labelClips'));
 show((location.hash||'#/home').replace('#/','').replace('#',''));
 loadStats();loadHealth();checkClipUpdates().catch(()=>{});
 let liveEvents=null,liveRefreshTimer=null,liveRefreshRunning=false,livePendingTopics=new Set();
+let liveRetryTimer=null,liveRetryFailures=0,liveStatusBusy=false,liveWasOffline=false;
+function renderLiveStatus(camera){
+  if(typeof camera.connected!=='boolean')return;
+  const tag=$('.live-tag'),quality=$('#liveQuality');
+  if(tag){tag.classList.toggle('offline',!camera.connected);tag.innerHTML='<span class="live-dot"></span>'+(camera.connected?(camera.detection_enabled===false?'预览中':'LIVE'):'重连中');}
+  if(quality){
+    quality.hidden=camera.connected&&camera.detection_enabled!==false&&camera.quality?.usable!==false;
+    quality.textContent=!camera.connected?'摄像头暂时没有新画面，正在等待恢复…':camera.detection_enabled===false?'视频已连接 · 当前仅预览，识别未启动':'画面细节不足，暂停记录';
+  }
+  if(camera.connected){
+    liveRetryFailures=0;
+    if(liveWasOffline&&!document.hidden&&currentPage()==='home')restartLivePreview();
+  }
+  liveWasOffline=!camera.connected;
+}
+function restartLivePreview(){
+  clearTimeout(liveRetryTimer);liveRetryTimer=null;
+  if(document.hidden||currentPage()!=='home')return;
+  const live=$('#live');if(live)live.src='/stream.mjpg?t='+Date.now();
+}
+async function pollLiveStatus(){
+  if(document.hidden||currentPage()!=='home'||liveStatusBusy)return;
+  liveStatusBusy=true;
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),4000);
+  try{const response=await fetch('/api/live/status',{signal:controller.signal,cache:'no-store'});if(response.ok)renderLiveStatus(await response.json());}
+  catch(error){const quality=$('#liveQuality'),tag=$('.live-tag');if(quality){quality.hidden=false;quality.textContent='本机服务暂不可用，正在重新连接…';}if(tag){tag.classList.add('offline');tag.innerHTML='<span class="live-dot"></span>服务重连中';}}
+  finally{clearTimeout(timeout);liveStatusBusy=false;}
+}
+$('#live').addEventListener('error',()=>{
+  if(document.hidden||currentPage()!=='home'||!$('#live').getAttribute('src')||liveRetryTimer)return;
+  liveRetryTimer=setTimeout(restartLivePreview,Math.min(8000,500*2**Math.min(liveRetryFailures++,4)));
+});
+setInterval(pollLiveStatus,2500);
 function currentPage(){return (location.hash||'#/home').replace('#/','');}
 function updateLiveVisibility(){
   const live=$('#live');if(!live)return;
   const active=!document.hidden&&currentPage()==='home';
   if(active&&!live.getAttribute('src'))live.src='/stream.mjpg';
-  else if(!active)live.removeAttribute('src');
+  else if(!active){clearTimeout(liveRetryTimer);liveRetryTimer=null;live.removeAttribute('src');}
+  if(active)pollLiveStatus();
 }
 async function refreshLivePage(topics){
   const page=currentPage(),jobs=[];
-  if(topics.has('data'))jobs.push(loadStats(),checkClipUpdates());
+  if(topics.has('data')){if(page==='lab')scheduleReviewRefresh();else jobs.push(loadStats(),checkClipUpdates());}
   if((page==='home'||page==='disp')&&['data','flow'].some(t=>topics.has(t)))jobs.push(loadDispenser());
   if((page==='home'||page==='trend')&&['data','monitoring','clock'].some(t=>topics.has(t)))jobs.push(loadHealth());
   if(page==='lab'&&topics.has('training'))jobs.push(pollTrain(),pollTrainVideo());
   if(page==='records'&&topics.has('data'))jobs.push(loadRecords());
+  if(page==='replay'&&topics.has('data'))jobs.push(loadReplay(true));
   if(page==='trend'&&topics.has('data'))jobs.push(renderTrend());
   if(topics.has('clock')){const now=new Date(),label=$('#tlNow'),line=$('.tl-now');if(label)label.textContent='现在 '+now.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});if(line)line.style.left=((now.getHours()+now.getMinutes()/60)/24*100)+'%';}
   await Promise.allSettled(jobs);
@@ -1108,14 +1148,16 @@ function renderFlow(f){
   const alert=$('#flowAlert'),panel=$('#flowPanel');
   if(!f){alert.hidden=true;panel.textContent='出水监测未启用';return;}
   const recovery=f.recovery;
-  alert.hidden=!f.alert&&!recovery;
-  alert.classList.toggle('recovered',!f.alert);
+  const needsCalibration=!f.has_stopped_reference||!f.has_flowing_reference;
+  alert.hidden=!f.alert&&!recovery&&!needsCalibration;
+  alert.classList.toggle('recovered',!f.alert&&!needsCalibration);
   if(f.alert)alert.innerHTML=`<div><strong>疑似停止出水</strong><p>${esc(f.state==='suspected_stopped'?(f.cause_message||f.message):'上次检测到停水，正在观察恢复情况。')}</p></div><button class="btn ghost" onclick="go('disp')">检查饮水机</button>`;
   else if(recovery)alert.innerHTML=`<div class="recovery-scroll"><strong>出水已恢复</strong><span>${waterDate(recovery.start)} 至 ${waterDate(recovery.end)} 检测到停水 · ${waterDate(recovery.end)} 已恢复 · 今日累计停水 ${waterDuration(f.today_downtime_seconds||0)}</span></div><button class="recovery-dismiss" aria-label="关闭恢复提醒" onclick='dismissFlowRecovery(${JSON.stringify(recovery.id)})'>×</button>`;
+  else if(needsCalibration)alert.innerHTML=`<div><strong>出水监测尚未完成校准</strong><p>还需保存${[!f.has_stopped_reference?'停止出水':'',!f.has_flowing_reference?'正常出水':''].filter(Boolean).join('和')}画面，才能完整判断停止与恢复。</p></div><button class="btn ghost" onclick="go('disp')">设置出水监测</button>`;
   const names={suspected_stopped:'疑似停止出水',flowing:'正在正常出水',unknown:'出水状态待确认',learning:'正在持续观察',unconfigured:'尚未设置出水监测'};
-  const calibrationOpen=panel.querySelector('.flow-calibration')?.open;
+  const calibrationOpen=needsCalibration||panel.querySelector('.flow-calibration')?.open;
   panel.innerHTML=`<div class="flow-heading"><div><span class="flow-eyebrow">实时出水监测</span><h3>${esc(names[f.state]||names.unknown)}</h3></div><span class="tag ${f.alert?'bad':f.state==='flowing'?'ok':''}">${f.alert?'请检查':f.state==='flowing'?'出水正常':'观察中'}</span></div><p class="flow-description">${esc(f.alert?(f.cause_message||f.message):f.message)}</p>
-    <details class="flow-calibration" ${calibrationOpen?'open':''}><summary>设置与校准出水画面 <span>停止参考${f.has_stopped_reference?'已保存':'未保存'} · 正常参考${f.has_flowing_reference?'已保存':'未保存'}</span></summary><p>框选出水口，关机后保存停止画面，再开机保存正常画面。之后会自动观察停止与恢复。</p><div class="flow-actions"><button class="btn ghost" onclick="openSceneSetup('flow')">框选出水口</button><button class="btn ghost" onclick="captureFlowReference('stopped')">保存停止画面</button><button class="btn" onclick="captureFlowReference('flowing')">保存正常出水画面</button></div></details>`;
+    <details class="flow-calibration" ${calibrationOpen?'open':''}><summary>设置与校准出水画面 <span>停止参考${f.has_stopped_reference?'已保存':'未保存'} · 正常参考${f.has_flowing_reference?'已保存':'未保存'}</span></summary><p>框选出水口，关机后保存停止画面，再开机保存正常画面。之后会连续多帧观察停止与恢复。疑似停水仅提醒检查设备，不影响喝水确认和记录。</p><div class="flow-actions"><button class="btn ghost" onclick="openSceneSetup('flow')">框选出水口</button><button class="btn ghost" onclick="captureFlowReference('stopped')">保存停止画面</button><button class="btn" onclick="captureFlowReference('flowing')">保存正常出水画面</button></div></details>`;
   renderDispenserRecords(dispData);
 }
 async function dismissFlowRecovery(id){

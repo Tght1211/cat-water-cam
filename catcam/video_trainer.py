@@ -7,7 +7,7 @@ from __future__ import annotations
 import io
 import json
 import hashlib
-import sqlite3
+from catcam.database import connect
 from datetime import datetime
 import os
 import threading
@@ -107,8 +107,7 @@ def extract_and_cache(clip_path, training_dir, extractor, dim: int = FEATURE_DIM
 
 def _labeled_clips(store) -> list[tuple[str, int]]:
     """从 labels 表取所有 (clip_name, is_drinking)；排除 source='local'（机器自身判定，不当训练真值）。"""
-    import sqlite3
-    with sqlite3.connect(store.db_path) as conn:
+    with connect(store.db_path) as conn:
         rows = conn.execute(
             "SELECT clip_name, COALESCE(action_drinking,is_drinking) FROM labels WHERE source IS NULL OR source IN ('human', 'ai') ORDER BY clip_name"
         ).fetchall()
@@ -168,7 +167,7 @@ def train_video_head(clips_dir, training_dir, store, registry, models_dir,
     extractor = extractor or extractor_for_backend('s3d-temporal-v2' if finetune else backend, roi)
     dim = getattr(extractor, 'dim', dim)
     backend = getattr(extractor, 'backend', 's3d-legacy')
-    with sqlite3.connect(store.db_path) as conn:
+    with connect(store.db_path) as conn:
         snapshot = conn.execute("SELECT clip_name, COALESCE(action_drinking,is_drinking), ts FROM labels WHERE source IS NULL OR source IN ('human','ai')").fetchall()
     X, y, names = gather_dataset(clips_dir, training_dir, store, extractor, dim,
                                  force=rebuild, progress_cb=progress_cb)
@@ -365,7 +364,7 @@ def dataset_diagnostics(clips_dir, training_dir, store):
     rows = _labeled_clips(store)
     usable = [(n, y) for n, y in rows if training_clip_path(clips_dir,training_dir,n).exists() or feature_cache_path(training_dir,n).exists()]
     videos = [(n,y) for n,y in rows if training_clip_path(clips_dir,training_dir,n).exists()]
-    with sqlite3.connect(store.db_path) as conn:
+    with connect(store.db_path) as conn:
         pending={r[0] for r in conn.execute('SELECT clip_name FROM labels WHERE trained_version IS NULL')}
     video_counts={'drinking':sum(y==1 for _,y in videos),'not_drinking':sum(y==0 for _,y in videos)}
     new_counts={'drinking':sum(y==1 and n in pending for n,y in videos),'not_drinking':sum(y==0 and n in pending for n,y in videos)}

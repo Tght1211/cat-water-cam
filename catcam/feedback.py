@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+
+from catcam.database import connect
 import time
 import shutil
 import math
@@ -13,25 +15,29 @@ def extract_frames(clip_path: Path, out_dir: Path, max_frames: int) -> list[Path
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(clip_path))
-    frames = []
+    if max_frames < 1:
+        cap.release()
+        raise ValueError('抽帧数量必须大于零')
+    stem = Path(clip_path).stem
+    written: list[Path] = []
     try:
-        while True:
+        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        # 直接定位少量采样帧，避免为 5 张训练图解码并驻留整段录像。
+        step = max(1, count // max_frames)
+        positions = range(0, count, step) if count > 0 else range(max_frames)
+        for position in positions:
+            if len(written) >= max_frames:
+                break
+            if count > 0 and position:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, position)
             ok, frame = cap.read()
             if not ok:
                 break
-            frames.append(frame)
+            path = out_dir / f"{stem}_{len(written)}.jpg"
+            if cv2.imwrite(str(path), frame):
+                written.append(path)
     finally:
         cap.release()
-    if not frames:
-        return []
-    step = max(1, len(frames) // max_frames)
-    chosen = frames[::step][:max_frames]
-    stem = Path(clip_path).stem
-    written: list[Path] = []
-    for i, frame in enumerate(chosen):
-        p = out_dir / f"{stem}_{i}.jpg"
-        cv2.imwrite(str(p), frame)
-        written.append(p)
     return written
 
 
@@ -99,7 +105,7 @@ class FeedbackStore:
                          (path.name,seconds))
 
     def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        return connect(self.db_path)
 
     def label_clip(
         self, clip_path: Path, is_drinking: bool, max_frames: int = 5,
@@ -107,7 +113,9 @@ class FeedbackStore:
     ) -> bool:
         clip_path = Path(clip_path)
         if reason is None:
-            reason = self.clip_notes().get(clip_path.name)
+            with self._conn() as conn:
+                row = conn.execute('SELECT reason FROM clip_notes WHERE clip_name=?', (clip_path.name,)).fetchone()
+            reason = row[0] if row else None
         if outcome is not None and outcome not in ('drinking','dry_lick','no_action'):
             raise ValueError('请选择实际喝到水、舔水但没喝到或没有喝水动作')
         if outcome is not None and is_drinking != (outcome=='drinking'):

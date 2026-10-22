@@ -29,6 +29,25 @@ def test_index_serves_html(tmp_path):
     assert r.headers["cache-control"] == "no-store"
 
 
+def test_preview_reports_connected_video_without_marking_monitoring_offline(tmp_path):
+    app, stats, recorder, feedback = _build(tmp_path)
+    camera = {'connected': True, 'last_frame_age': 0.1, 'width': 1280, 'height': 720,
+              'quality': {'usable': True}, 'detection_enabled': False}
+    app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir,
+                     live_status_provider=lambda: dict(camera))
+    client = TestClient(app)
+    assert client.get('/api/live/status').json() == camera
+    health = client.get('/api/health').json()
+    assert health['camera']['connected'] is True
+    assert health['status'] == 'preview_only'
+    assert health['monitoring']['status'] == 'preview'
+    assert health['coverage_hours'] == 0
+    assert not any('检查摄像头' in message for message in health['actions'])
+    camera['connected'] = False
+    assert client.get('/api/live/status').json()['connected'] is False
+    assert client.get('/api/health').json()['monitoring']['status'] == 'offline'
+
+
 def test_audio_status_exposes_runtime_health(tmp_path):
     app, stats, recorder, feedback = _build(tmp_path)
     assert TestClient(app).get("/api/audio/status").json() == {
@@ -319,6 +338,21 @@ def test_activate_video_model_failure_keeps_registry_unchanged(tmp_path):
     assert registry.active_id() is None
 
 
+def test_user_can_choose_automatic_model_despite_small_evaluation_set(tmp_path):
+    switched = []
+    app, _, _, _, registry, _ = _build_with_registry(
+        tmp_path, video_model_switch=lambda entry, mode: switched.append(mode))
+    registry.add(path=tmp_path/'head.npz', top1=.92, image_counts={}, label_counts={},
+                 base='s3d+head', epochs=1, imgsz=224, created_ts=1,
+                 report={'auto_label_eligible': False, 'warnings': ['独立测试样本较少']})
+    client = TestClient(app)
+    assert client.post('/api/model/activate', json={'id': 'v1', 'mode': 'gate'}).status_code == 200
+    assert registry.active_mode() == 'gate'
+    assert switched == ['gate']
+    assert client.post('/api/model/activate', json={'id': 'v1', 'mode': 'invalid'}).status_code == 400
+    assert registry.active_mode() == 'gate'
+
+
 class _FakeVideoTrainer:
     def __init__(self): self.started = 0; self._state = "idle"; self.last_rebuild = None
     def start(self, rebuild=False, backend='s3d-temporal-v2', auto_activate=False): self.started += 1; self.last_rebuild = rebuild; self._state = "running"; return True
@@ -458,7 +492,7 @@ def test_clip_api_and_stats_use_same_minute_interval(tmp_path):
     stats = StatsStore(tmp_path / 'shared.db')
     feedback = FeedbackStore(tmp_path / 'shared.db', tmp_path / 'train')
     recorder = ClipRecorder(tmp_path / 'clips', max_clips=10, fps=30)
-    for ts in [100, 115, 130, 160]:
+    for ts in [100, 115, 130, 160, 220]:
         name = f'clip_{ts * 1000}.mp4'
         (recorder.clips_dir / name).touch()
         stats.record_event(ts, name)
@@ -466,8 +500,8 @@ def test_clip_api_and_stats_use_same_minute_interval(tmp_path):
             conn.execute("INSERT INTO labels(clip_name,is_drinking,source) VALUES (?,1,'human')", (name,))
     app = create_app(stats, recorder, feedback, lambda: None, recorder.clips_dir)
     data = TestClient(app).get('/api/clips').json()
-    assert data['drinking_records'] == ['clip_160000.mp4', 'clip_100000.mp4']
-    assert len(data['clips']) == 4  # 回放和复核仍可访问所有片段
+    assert data['drinking_records'] == ['clip_220000.mp4', 'clip_100000.mp4']
+    assert len(data['clips']) == 5
     assert stats.count_between(0, 1000) == 2
 
 
@@ -545,3 +579,60 @@ def test_review_page_filters_counts_and_human_review_semantics(tmp_path):
     stats.set_review_candidate(names[0], False)
     assert names[0] in client.get('/api/clips/page?filter=all').json()['clips']
     assert client.get('/api/clips/page', params={'cursor': names[-1]}).json()['clips'] == []
+
+
+def test_review_page_skips_drinking_history_aggregation(tmp_path, monkeypatch):
+    client, stats, feedback, recorder, names = _paged_fixture(tmp_path, 1000)
+    def forbidden():
+        raise AssertionError('待复核分页不应扫描喝水历史或合并喝水次数')
+    monkeypatch.setattr(stats, 'drinking_records', forbidden)
+    result = client.get('/api/clips/page')
+    assert result.status_code == 200
+    assert len(result.json()['clips']) == 12
+
+
+def test_thumbnail_conditional_request_skips_decoding(tmp_path, monkeypatch):
+    import catcam.web as web
+    app, _, recorder, _ = _build(tmp_path)
+    path = recorder.clips_dir/'clip_1000.mp4'
+    path.write_bytes(b'placeholder')
+    class Capture:
+        def __init__(self, path): pass
+        def get(self, prop): return 30
+        def set(self, prop, value): return True
+        def read(self): return True, np.zeros((48, 64, 3), np.uint8)
+        def release(self): pass
+    monkeypatch.setattr(web.cv2, 'VideoCapture', Capture)
+    client = TestClient(app)
+    result = client.get('/clips/clip_1000.mp4/thumb.jpg')
+    assert result.status_code == 200
+    def forbidden(*a):
+        raise AssertionError('封面未变化时不应重新解码')
+    monkeypatch.setattr(web.cv2, 'VideoCapture', forbidden)
+    cached = client.get('/clips/clip_1000.mp4/thumb.jpg', headers={'If-None-Match':result.headers['etag']})
+    assert cached.status_code == 304
+    assert cached.content == b''
+
+
+def test_thumbnails_for_different_clips_decode_concurrently(tmp_path, monkeypatch):
+    import catcam.web as web
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    app, _, recorder, _ = _build(tmp_path)
+    first = 'clip_1000.mp4'
+    second = next(f'clip_{i}.mp4' for i in range(2000, 2100) if hash(f'clip_{i}.mp4')%32 != hash(first)%32)
+    for name in (first, second):
+        (recorder.clips_dir/name).write_bytes(b'placeholder')
+    barrier = Barrier(2)
+    class Capture:
+        def __init__(self, path): pass
+        def get(self, prop): return 30
+        def set(self, prop, value): return True
+        def read(self):
+            barrier.wait(timeout=3)  # 若仍共用全局解码锁，这里会超时。
+            return True, np.zeros((48, 64, 3), np.uint8)
+        def release(self): pass
+    monkeypatch.setattr(web.cv2, 'VideoCapture', Capture)
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda name: client.get(f'/clips/{name}/thumb.jpg'), (first, second)))
+    assert all(r.status_code == 200 for r in responses)

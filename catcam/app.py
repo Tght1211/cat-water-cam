@@ -41,6 +41,8 @@ from catcam.flow import FlowMonitor
 from catcam.motion import MotionDetector
 from catcam.review_routing import ReviewRouter
 from catcam.notifications import EmailNotifications
+from catcam.source import open_capture
+from catcam.replay import ReplayArchive
 
 
 class LatestFrame:
@@ -68,6 +70,23 @@ class LatestFrame:
     def get_quality(self):
         with self._lock:
             return dict(self._quality) if self._quality else {'usable': False}
+
+    def status(self):
+        with self._lock:
+            age = max(0, time.time() - self._now) if self._now is not None else None
+            connected = self._frame is not None and age is not None and age <= 3
+            return {'connected': connected, 'last_frame_age': round(age, 2) if age is not None else None,
+                    'width': self._frame.shape[1] if connected else None,
+                    'height': self._frame.shape[0] if connected else None,
+                    'quality': dict(self._quality) if self._quality else None}
+
+    def clear(self):
+        with self._lock:
+            self._now = None
+            self._frame = None
+            self._night = False
+            self._quality = None
+            self._preview = None
 
     def get(self):
         """供网页预览：只返回帧拷贝。"""
@@ -138,8 +157,12 @@ class VideoJudgeRuntime:
             return self._judge, self._mode
 
 
-def main(config_path: str = "config.json") -> None:
+def main(config_path: str = "config.json", preview_only: bool = False) -> None:
     cfg = load_config(config_path)
+    if preview_only:
+        from catcam.preview import run_preview
+        run_preview(cfg)
+        return
 
     cat_detector = CatDetector.from_path(cfg.yolo_model, min(.15,cfg.cat_confidence) if cfg.motion_recording else cfg.cat_confidence)
     stats = StatsStore(cfg.db_path)
@@ -171,7 +194,7 @@ def main(config_path: str = "config.json") -> None:
             print(f"本地视频裁判已加载：{active_entry['id']}（{registry.active_mode()}）")
         except Exception as e:  # noqa: BLE001
             print(f"本地视频裁判加载失败，暂不启用：{e}")
-    # 喝水结论只接受人工标注。保留模型管理对象仅用于兼容已有 API，不加载、不参与录制。
+    # 单帧模型不拦截录制；整段视频模型在录完后按生效模式自动确认。
     active_model = ActiveModel()
     trainer = TrainingManager(
         cfg.training_dir, cfg.models_dir, cfg.cls_base_model, cfg.train_epochs, cfg.train_imgsz,
@@ -236,13 +259,17 @@ def main(config_path: str = "config.json") -> None:
         else None
     )
     presence = Presence()
+    outlet_occlusion = Presence()
     motion = MotionDetector()
+    # 近景常只拍到猫头，YOLO 可能间歇漏框；背景前景保持器让猫停住时仍继续录制。
+    bowl_presence = nightvision.LowLightPresenceDetector()
 
     # 录音（仅会话录制模式）：持续采麦克风进环形缓冲，会话结束把对应时段 mux 进 mp4。
     # 起不来（无权限/无设备）由 AudioRing 内部看门狗兜底 → 无声，不影响录制。
     audio_ring = None
-    if cfg.record_audio and session is not None:
-        ring_seconds = cfg.preroll_seconds + cfg.max_session_seconds + 10.0
+    if cfg.record_audio and session is not None and not cfg.video_source.startswith("wosee:"):
+        # 不限长的视频仍使用有界音频缓冲，避免麦克风持续占满内存。
+        ring_seconds = cfg.preroll_seconds + (cfg.max_session_seconds or 3600.0) + 10.0
         audio_ring = AudioRing(
             cfg.audio_input_format, cfg.audio_device,
             sample_rate=cfg.audio_sample_rate, max_seconds=ring_seconds,
@@ -260,7 +287,7 @@ def main(config_path: str = "config.json") -> None:
             raise ValueError('摄像头尚未提供画面，请稍后重试')
         stamp, frame, _ = state
         quality = nightvision.assess_quality(frame, flow.roi, 50)
-        return flow.calibrate(kind, frame, bool(latest.get_quality().get("usable")) and quality['usable'] and time.time()-stamp < 2, presence.get()[0])
+        return flow.calibrate(kind, frame, quality['usable'] and time.time()-stamp < 2, outlet_occlusion.get()[0])
 
     dispenser = DispenserStore(
         cfg.db_path, cfg.dispenser_default_ml_per_drink, cfg.filter_cycle_days)
@@ -398,6 +425,8 @@ def main(config_path: str = "config.json") -> None:
         model_review=model_review,
         web_password_hash=cfg.web_password_hash,web_session_secret=cfg.web_session_secret,
         access_password_update=save_access_password,
+        replay_archive=ReplayArchive(recorder, stats, feedback, cfg.video_source),
+        live_status_provider=lambda: {**latest.status(), 'detection_enabled': True},
     )
     mail_notifications.start()
     threading.Thread(
@@ -416,7 +445,8 @@ def main(config_path: str = "config.json") -> None:
     if cfg.record_session:
         print(
             f"录制模式：整段会话（前补 {cfg.preroll_seconds:g}s，"
-            f"离开 {cfg.session_end_grace_seconds:g}s 收尾，封顶 {cfg.max_session_seconds:g}s）"
+            f"离开 {cfg.session_end_grace_seconds:g}s 收尾，"
+            f"{'不限时长' if cfg.max_session_seconds <= 0 else f'封顶 {cfg.max_session_seconds:g}s'}）"
         )
     if cfg.motion_recording:
         print(f'画面变化即录制：全画面触发、无停留门槛、无冷却，{cfg.frame_width}×{cfg.frame_height} / {cfg.fps} fps；视频滚动保留 {cfg.retention_days:g} 天。')
@@ -435,7 +465,8 @@ def main(config_path: str = "config.json") -> None:
                 temp.write_text(json.dumps(asdict(cfg),ensure_ascii=False,indent=2));temp.chmod(0o600);temp.replace(path)
         source=device or source
         factory=lambda camera:FreshMacCapture(camera,cfg.frame_width,cfg.frame_height,fps=cfg.fps)
-    cap = ReconnectingCapture(source,cfg.frame_width,cfg.frame_height,factory=factory,fps=cfg.fps)
+    cap = open_capture(cfg) if cfg.video_source.startswith("wosee:") else ReconnectingCapture(
+        source,cfg.frame_width,cfg.frame_height,factory=factory,fps=cfg.fps)
     if not cap.isOpened():
         print("摄像头暂时不可用，网页保持运行并等待自动重连。")
 
@@ -469,11 +500,11 @@ def main(config_path: str = "config.json") -> None:
                 photo=res.photo,
                 ai_labeler=None,
                 local_judge=judge,
-                mode='shadow' if cfg.motion_recording else mode,
+                mode=mode,
                 emailer=emailer,
                 stats=stats,
                 feedback=feedback,
-                auto_confirm_extremes=False if cfg.motion_recording else cfg.auto_confirm_extremes,
+                auto_confirm_extremes=cfg.auto_confirm_extremes,
             )
             if ai_queue is not None and mode != 'gate':
                 detail=stats.clip_prediction_details().get(res.clip_name,{})
@@ -514,11 +545,12 @@ def main(config_path: str = "config.json") -> None:
                     if session is not None:
                         result=session.close()
                         if result is not None:
-                            stats.record_event(result.timestamp,result.clip_name,candidate_only=result.candidate_only,review_candidate=not cfg.motion_recording)
+                            stats.record_event(result.timestamp,result.clip_name,candidate_only=result.candidate_only,review_candidate=not cfg.motion_recording,session=result)
                             _finalize_async(result)
+                    latest.clear()
                 time.sleep(buf_interval)
                 continue
-            now = time.time()
+            now = cap.timestamp if getattr(cap, "is_live_stream", False) else time.time()
             height,width=raw.shape[:2]
             scale=min(1.0,cfg.frame_width/width,cfg.frame_height/height)
             if scale<1:
@@ -536,7 +568,8 @@ def main(config_path: str = "config.json") -> None:
             latest.set(now,frame,night,quality)
             if cfg.motion_recording:
                 presence.set(now,motion.observe(now,frame))
-            flow.observe(now, raw, quality["usable"], presence.get()[0])
+            # 水面变化不等于猫遮挡；出水口按自己的区域检查画质和猫框。
+            flow.observe(now, raw, True, outlet_occlusion.get()[0])
             if now + .002 >= next_buf:
                 next_buf += buf_interval
                 if next_buf < now - buf_interval:
@@ -556,7 +589,7 @@ def main(config_path: str = "config.json") -> None:
                         res=session.close()
                 if res is not None:
                     print(f"录到一段候选： {res.clip_name}（等待判断）")
-                    stats.record_event(res.timestamp,res.clip_name,candidate_only=res.candidate_only,review_candidate=not cfg.motion_recording)
+                    stats.record_event(res.timestamp,res.clip_name,candidate_only=res.candidate_only,review_candidate=not cfg.motion_recording,session=res)
                     _finalize_async(res)
 
     capture_thread=threading.Thread(target=_capture, daemon=True)
@@ -583,9 +616,6 @@ def main(config_path: str = "config.json") -> None:
     # 会话模式：只更新「猫是否在碗」给采集线程的状态机；旧模式：直接定长录制。
     try:
         while True:
-            if cfg.motion_recording:
-                time.sleep(cfg.detect_interval_seconds)
-                continue
             state = latest.get_state()
             if state is None:
                 time.sleep(cfg.detect_interval_seconds)
@@ -593,8 +623,20 @@ def main(config_path: str = "config.json") -> None:
             now, frame, night = state
             quality = latest.get_quality()
             blocked = not quality.get('usable', False) or time.time()-now>2
+            if blocked:
+                bowl_presence.reset()
+                foreground_present = False
+            else:
+                foreground_present = bowl_presence.observe(frame, cfg.bowl_roi, now)['present']
+            cats = [] if time.time()-now > 2 else cat_detector.detect_cats(frame)
+            h, w = frame.shape[:2]
+            outlet = ratio_rect_to_pixels(flow.roi, w, h)
+            outlet_occlusion.set(now, foreground_present or any(cat_overlaps_bowl(cat, outlet, .15) for cat in cats))
+            if cfg.motion_recording:
+                time.sleep(cfg.detect_interval_seconds)
+                continue
             if session is not None:
-                in_roi=False if blocked else pipeline.cat_in_bowl(frame,night)
+                in_roi=False if blocked else (pipeline.cat_in_bowl(frame,night,cats=cats) or foreground_present)
                 presence.set(now, in_roi)
             elif not blocked:
                 clip = pipeline.detect(now, frame, night=night)
@@ -607,7 +649,7 @@ def main(config_path: str = "config.json") -> None:
         if session is not None:
             res = session.close()
             if res is not None:
-                stats.record_event(res.timestamp, res.clip_name,candidate_only=res.candidate_only,review_candidate=not cfg.motion_recording)
+                stats.record_event(res.timestamp, res.clip_name,candidate_only=res.candidate_only,review_candidate=not cfg.motion_recording,session=res)
                 # 退出时收尾的最后一段：同步合一次声音（守护线程即将随进程消失，来不及异步）。
                 if audio_ring is not None and audio_ring.available:
                     mux_audio_into(cfg.clips_dir / res.clip_name,

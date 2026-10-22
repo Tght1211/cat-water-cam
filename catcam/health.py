@@ -1,7 +1,7 @@
 """监控完整度和饮水习惯变化。只描述已观测行为，不推断摄水量或疾病。"""
 from __future__ import annotations
 
-import sqlite3
+from catcam.database import connect
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,7 +10,7 @@ from pathlib import Path
 class MonitoringStore:
     def __init__(self, db_path):
         self.db_path = Path(db_path)
-        with sqlite3.connect(self.db_path) as c:
+        with connect(self.db_path) as c:
             c.execute('CREATE TABLE IF NOT EXISTS monitoring (ts REAL PRIMARY KEY, seconds REAL NOT NULL, usable INTEGER NOT NULL)')
         self._last_ts = None
         self._frame_ts = None
@@ -20,7 +20,7 @@ class MonitoringStore:
         # 仅连续且两端都有有效画面的区间计入覆盖率；重启/断流不补算。
         seconds = 0 if self._last_ts is None or now-self._last_ts > 65 else max(0, min(30, now-self._last_ts))
         usable = bool(quality['usable'] and self._last_quality and self._last_quality['usable'])
-        with sqlite3.connect(self.db_path) as c:
+        with connect(self.db_path) as c:
             c.execute('INSERT OR REPLACE INTO monitoring VALUES (?,?,?)', (now, seconds, int(usable)))
         self._last_ts, self._last_quality = now, dict(quality)
         self._frame_ts=now
@@ -36,7 +36,7 @@ class MonitoringStore:
         return {**self._last_quality, 'last_frame_ts': self._frame_ts}
 
     def coverage(self, start, end):
-        with sqlite3.connect(self.db_path) as c:
+        with connect(self.db_path) as c:
             rows = c.execute('SELECT ts, seconds, usable FROM monitoring WHERE ts > ? AND ts < ?', (start, end+30)).fetchall()
         return sum(max(0, min(ts, end)-max(ts-seconds, start)) for ts,seconds,usable in rows if usable)
 

@@ -50,3 +50,31 @@ def test_stale_camera_frame_is_not_returned_as_live(monkeypatch):
     lf=LatestFrame();lf.set(100,np.zeros((4,4,3),np.uint8),False)
     monkeypatch.setattr('catcam.app.time.time',lambda:104)
     assert lf.get() is None
+
+
+def test_latest_frame_clear_removes_stale_evidence():
+    latest = LatestFrame()
+    latest.set(123, np.zeros((4, 4, 3), np.uint8), True)
+    latest.clear()
+    assert latest.get() is None
+    assert latest.get_state() is None
+    assert latest.get_quality() == {"usable": False}
+
+
+def test_live_connection_status_uses_fresh_frames_independently_of_monitoring(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr('catcam.app.time.time', lambda: now[0])
+    latest = LatestFrame()
+    assert latest.status()['connected'] is False
+    latest.set(now[0], np.zeros((48, 64, 3), np.uint8), True, {'usable': False})
+    status = latest.status()
+    assert status['connected'] is True
+    assert status['width'] == 64 and status['height'] == 48
+    assert status['quality']['usable'] is False
+    now[0] += 3.1
+    assert latest.status()['connected'] is False
+    latest.set(now[0], np.zeros((48, 64, 3), np.uint8), False)
+    assert latest.status()['connected'] is True
+    latest.clear()
+    assert latest.status()['last_frame_age'] is None
+    assert latest.status()['connected'] is False

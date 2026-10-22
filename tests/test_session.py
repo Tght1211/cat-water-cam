@@ -81,3 +81,64 @@ def test_preroll_frames_written(tmp_path):
         n += 1
     cap.release()
     assert n >= 20               # 至少包含 pre-roll 的那些帧
+
+
+def test_unlimited_session_keeps_whole_visit_past_one_minute(tmp_path):
+    s, rec = _make(tmp_path, dwell=2, grace=3, maxlen=0, cooldown=60)
+    fb = FrameBuffer(5, 10)
+    frame = _frame()
+    for i in range(21):
+        fb.add(i / 10, frame)
+    s.update(2, frame, True, 0, fb)
+    for i in range(21, 1201):
+        assert s.update(i / 10, frame, True, 0, fb) is None
+    for i in range(1201, 1230):
+        assert s.update(i / 10, frame, False, None, fb) is None
+    result = s.update(123, frame, False, None, fb)
+    assert result.presence_start == 0
+    assert result.presence_end == 120
+    assert result.audio_end == 123
+    assert result.end_reason == 'left'
+    cap = cv2.VideoCapture(str(rec.clips_dir / result.clip_name))
+    assert cap.get(cv2.CAP_PROP_FRAME_COUNT) >= 1230
+    cap.release()
+    # 已超过开始时的一分钟，离开后的下一次独立到访可正常录制。
+    s.update(126, frame, True, 124, fb)
+    assert s.recording
+    s.close()
+
+
+def test_short_visit_cannot_retrigger_within_a_minute(tmp_path):
+    s, _ = _make(tmp_path, dwell=0, grace=2, maxlen=0, cooldown=60)
+    fb, frame = FrameBuffer(5, 10), _frame()
+    s.update(100, frame, True, 100, fb)
+    assert s.update(103, frame, False, None, fb)
+    s.update(159.9, frame, True, 150, fb)
+    assert not s.recording
+    s.update(160, frame, True, 150, fb)
+    assert s.recording
+    s.close()
+
+
+def test_configured_cap_does_not_repeat_same_visit(tmp_path):
+    s, _ = _make(tmp_path, dwell=0, grace=2, maxlen=5, cooldown=60)
+    fb, frame = FrameBuffer(5, 10), _frame()
+    s.update(100, frame, True, 100, fb)
+    assert s.update(105, frame, True, 100, fb).end_reason == 'limit'
+    s.update(180, frame, True, 100, fb)
+    assert not s.recording
+    s.update(181, frame, False, None, fb)
+    s.update(182, frame, True, 182, fb)
+    assert s.recording
+    s.close()
+
+
+def test_interrupted_end_uses_last_written_frame(tmp_path):
+    s, _ = _make(tmp_path, dwell=0, grace=3, maxlen=0)
+    fb, frame = FrameBuffer(5, 10), _frame()
+    s.update(100, frame, True, 100, fb)
+    s.update(101, frame, False, None, fb)
+    result = s.close()
+    assert result.audio_end == 101
+    assert result.presence_end == 100
+    assert result.end_reason == 'interrupted'

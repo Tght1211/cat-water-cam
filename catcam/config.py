@@ -30,7 +30,7 @@ class Config:
     record_session: bool = True
     preroll_seconds: float = 3.0          # 触发前补录这么久（猫凑近的过程）
     session_end_grace_seconds: float = 3.0  # 猫离开持续这么久才算结束、收尾存盘
-    max_session_seconds: float = 15.0      # 单段封顶，防卡死无限录；超过 15s 没有更多信息量
+    max_session_seconds: float = 15.0      # 单段上限；设为 0 则持续录到猫离开，完整保留会话
     yolo_model: str = "yolov8n.pt"
     cat_confidence: float = 0.4
     data_dir: str = "data"

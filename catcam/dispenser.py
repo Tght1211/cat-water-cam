@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import sqlite3
+
+from catcam.database import connect
 import math
 import statistics
 import json
@@ -64,7 +66,7 @@ class DispenserStore:
                                  (row['last_refill_ts'], row['last_refill_ml']))
 
     def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        return connect(self.db_path)
 
     def _row(self, conn) -> dict:
         cur = conn.execute(

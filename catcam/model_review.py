@@ -41,7 +41,7 @@ class ModelReview:
                 self.feedback.record_video_duration(path)
                 if result:
                     self.stats.set_prediction(path.name,int(result.drinking),judge.version,result.confidence)
-                    if (mode=='gate' and not result.uncertain or self.auto_confirm_enabled() and is_extreme_verdict(result)) and not (result.drinking and self.stats.requires_water_review(path.name)):
+                    if (mode=='gate' and not result.uncertain or self.auto_confirm_enabled() and is_extreme_verdict(result)):
                         self.feedback.record_machine_label(path.name,result.drinking,source='local',confidence=result.confidence)
                 with self._lock:self._status['done']=i+1
             with self._lock:self._status['state']='done'
