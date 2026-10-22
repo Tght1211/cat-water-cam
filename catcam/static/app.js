@@ -716,6 +716,7 @@ async function loadMoreLabelClips(button){
     const known=new Set(labState.names);mergeLabelPage(data);
     // 只追加新卡片，已播放或正在复核的卡片不重建。
     button.insertAdjacentHTML('beforebegin',data.clips.filter(n=>!known.has(n)).map(labelCard).join(''));
+    refreshDrinkTracks($('#labelClips'));
     button.remove();appendLabelMore();updateLabelChipCounts();
   }catch(e){if(generation===labState.generation){button.disabled=false;button.textContent='加载失败，点击重试';}}
   finally{if(generation===labState.generation)labState.busy=false;}
@@ -748,8 +749,9 @@ function labelCard(n,i){
   const meta=clipsData.meta?.[n]||{},seconds=meta.effective_drinking_seconds??(d?Math.round(d*.8*10)/10:null);
   return `<div class="clip review-card" data-name="${en}">
     <div class="thumb">
-      <video class="inline-clip" src="/clips/${encodeURIComponent(n)}" data-poster="/clips/${encodeURIComponent(n)}/thumb.jpg" controls preload="none" playsinline></video>
+      <video class="inline-clip" src="/clips/${encodeURIComponent(n)}" data-poster="/clips/${encodeURIComponent(n)}/thumb.jpg" preload="none" playsinline></video>
       ${d?`<span class="dur">录像 ${d.toFixed(1)} 秒</span>`:''}</div>
+    ${drinkTrackMarkup(n,true)}
     <div class="review-side">
       <div class="review-head"><div class="review-title">${t?'发生于 '+hhmmss(t):'候选视频'}</div>${meta.outcome==='dry_lick'?'<span class="tag warn">舔水未喝到</span>':clipsData.meta?.[n]?.source==='local'?'<span class="tag mute"><i></i>模型自动确认</span>':statusTag(v)}</div>
       <div class="row">${modelTag(n)}</div>
@@ -771,6 +773,7 @@ function renderLabelClips(){
     box.innerHTML=`<div class="empty" style="grid-column:1/-1">${message}</div>`;appendLabelMore();return;
   }
   box.innerHTML=items.map(labelCard).join('');
+  refreshDrinkTracks(box);
   appendLabelMore();
 }
 function setLabelFilter(f,btn){labelFilter=f;
@@ -779,11 +782,7 @@ function setLabelFilter(f,btn){labelFilter=f;
 }
 function labelDuration(clip){
   if(page==='records'){focusDrinkRecord(clip);return;}
-  const max=clipsData.durations[clip]||0;
-  openModal(`<h3>记录真正舔水的时长</h3><video src="/clips/${encodeURIComponent(clip)}" controls style="width:100%"></video>
-    <p class="msub">只填实际舔水动作的总秒数，排除靠近、嗅闻和离开；录像共 ${max} 秒。将用于按时长校准估值。</p>
-    <input id="drinkDuration" type="number" min="0.1" step="0.1" max="${max}" value="${clipsData.meta?.[clip]?.effective_drinking_seconds??Math.round(max*.8*10)/10}">
-    <div class="modal-acts"><button class="btn" onclick='saveDrinkDuration(${JSON.stringify(clip)})'>保存时长</button></div>`);
+  openAgentReviewClip(clip);
 }
 async function saveDrinkDuration(clip){
   const seconds=Number($('#drinkDuration').value);
@@ -816,6 +815,7 @@ async function fb(clip,is){
       if(labelItems().includes(clip))card.outerHTML=labelCard(clip,0);
       else card.remove();
     }
+    refreshDrinkTracks($('#labelClips'));
     scheduleReviewRefresh();
     // 快复核完当前页时自动补下一页，保留其他视频的播放状态。
     const more=$('#labelClips .more');
@@ -1284,14 +1284,16 @@ function drinkVolume(seconds){
   return {value:null,note};
 }
 function clipClock(seconds){const value=Math.max(0,Math.floor(seconds||0));return Math.floor(value/60)+':'+String(value%60).padStart(2,'0');}
-function drinkTrackMarkup(name){
+function drinkTrackMarkup(name,videoOnly=false){
   const d=drinkDraft(name),duration=clipsData.durations[name]||0,jn=JSON.stringify(name);
   if(!(duration>0))return '<p class="note">录像时长尚不可用</p>';
-  return `<div class="drink-editor" data-drink-editor="${esc(name)}"><div class="drink-agent-actions"><button onclick='startCodexClip(${jn})'>Agent 预标全片</button><button onclick="openCodexJobs()">Agent 任务</button><button onclick="openCodexSetup()">配置</button></div><div class="drink-player-toolbar"><button class="drink-toggle" aria-label="播放或暂停视频" onclick='toggleDrinkVideo(${jn})'>▶</button><span class="drink-player-clock">00:00 / ${clipClock(duration)}</span><button class="drink-sound" onclick='toggleDrinkSound(${jn},this)' aria-label="切换视频声音">声音 开</button><button onclick='fullscreenDrinkVideo(${jn})' aria-label="全屏视频">⛶</button></div><div class="drink-video-heading"><span>视频轨道</span><div class="drink-zoom"><button onclick='zoomDrinkTimeline(${jn},.5)' aria-label="缩小时间轴">−</button><output>1×</output><button onclick='zoomDrinkTimeline(${jn},2)' aria-label="放大时间轴">＋</button><button onclick='zoomDrinkTimeline(${jn},0)'>适应全片</button></div></div><div class="drink-timeline-scroll" tabindex="0" aria-label="可横向滚动的视频与喝水轨道"><div class="drink-timeline-content"><div class="drink-track-stack"><div class="drink-video-track" aria-label="视频缩略帧轨道"><img loading="lazy" src="/clips/${encodeURIComponent(name)}/timeline.jpg" alt="按时间排列的视频缩略帧" draggable="false"></div><div class="drink-track-heading"><span>喝水动作轨</span><small class="drink-track-state"></small></div><div class="drink-track" aria-label="喝水时间轨"><div class="drink-regions"></div></div><i class="drink-playhead"><span></span></i></div><div class="drink-track-axis"><span>0:00</span><span>${clipClock(duration/4)}</span><span>${clipClock(duration/2)}</span><span>${clipClock(duration*3/4)}</span><span>${clipClock(duration)}</span></div></div></div><div class="drink-range-controls"><label>开始 <input data-drink-start type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间开始秒数"></label><label>结束 <input data-drink-end type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间结束秒数"></label><button onclick='addDrinkRange(${jn})'>＋一段</button><button onclick='removeDrinkRange(${jn})'>移除</button></div><div class="drink-track-summary"><span>区间合计 <b data-drink-total></b> 秒</span><span class="drink-amount">约 <b data-drink-ml></b> ml</span><button class="btn ghost" onclick='saveDrinkRanges(${jn},this)'>保存区间</button></div><p class="drink-volume-note"></p></div>`;
+  const markup=`<div class="drink-editor" data-drink-editor="${esc(name)}"><div class="drink-agent-actions"><button onclick='startCodexClip(${jn})'>Agent 预标全片</button><button onclick="openCodexJobs()">Agent 任务</button><button onclick="openCodexSetup()">配置</button></div><div class="drink-player-toolbar"><button class="drink-toggle" aria-label="播放或暂停视频" onclick='toggleDrinkVideo(${jn})'>▶</button><span class="drink-player-clock">00:00 / ${clipClock(duration)}</span><button class="drink-sound" onclick='toggleDrinkSound(${jn},this)' aria-label="切换视频声音">声音 开</button><button onclick='fullscreenDrinkVideo(${jn})' aria-label="全屏视频">⛶</button></div><div class="drink-video-heading"><span>视频轨道</span><div class="drink-zoom"><button onclick='zoomDrinkTimeline(${jn},.5)' aria-label="缩小时间轴">−</button><output>1×</output><button onclick='zoomDrinkTimeline(${jn},2)' aria-label="放大时间轴">＋</button><button onclick='zoomDrinkTimeline(${jn},0)'>适应全片</button></div></div><div class="drink-timeline-scroll" tabindex="0" aria-label="可横向滚动的视频与喝水轨道"><div class="drink-timeline-content"><div class="drink-track-stack"><div class="drink-video-track" aria-label="视频缩略帧轨道"><img loading="lazy" src="/clips/${encodeURIComponent(name)}/timeline.jpg" alt="按时间排列的视频缩略帧" draggable="false"></div><div class="drink-track-heading"><span>喝水动作轨</span><small class="drink-track-state"></small></div><div class="drink-track" aria-label="喝水时间轨"><div class="drink-regions"></div></div><i class="drink-playhead"><span></span></i></div><div class="drink-track-axis"><span>0:00</span><span>${clipClock(duration/4)}</span><span>${clipClock(duration/2)}</span><span>${clipClock(duration*3/4)}</span><span>${clipClock(duration)}</span></div></div></div><div class="drink-range-controls"><label>开始 <input data-drink-start type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间开始秒数"></label><label>结束 <input data-drink-end type="number" min="0" max="${duration}" step="0.1" aria-label="喝水区间结束秒数"></label><button onclick='addDrinkRange(${jn})'>＋一段</button><button onclick='removeDrinkRange(${jn})'>移除</button></div><div class="drink-track-summary"><span>区间合计 <b data-drink-total></b> 秒</span><span class="drink-amount">约 <b data-drink-ml></b> ml</span><button class="btn ghost" onclick='saveDrinkRanges(${jn},this)'>保存区间</button></div><p class="drink-volume-note"></p></div>`;
+  return videoOnly?markup.replace('class="drink-editor"','class="drink-editor review-timeline" data-video-only="true"'):markup;
 }
 function updateDrinkTrack(editor){
   const name=editor.dataset.drinkEditor,d=drinkDraft(name),duration=clipsData.durations[name];
   updateDrinkZoom(editor);
+  if(editor.dataset.videoOnly==='true')return;
   d.selected=Math.max(0,Math.min(d.selected,d.segments.length-1));
   const merged=[];for(const [start,end] of [...d.segments].sort((a,b)=>a[0]-b[0])){if(merged.length&&start<=merged[merged.length-1][1])merged[merged.length-1][1]=Math.max(end,merged[merged.length-1][1]);else merged.push([start,end]);}
   const seconds=merged.reduce((sum,[start,end])=>sum+end-start,0),volume=drinkVolume(seconds);
@@ -1346,19 +1348,19 @@ document.addEventListener('change',event=>{
   d.segments[d.selected]=[start,end];d.dirty=true;updateDrinkTrack(editor);
 });
 document.addEventListener('timeupdate',event=>{
-  if(!event.target.matches('#recGrid video,#modalCard .record-card video'))return;
+  if(!event.target.matches('#recGrid video,#labelClips video,#modalCard .record-card video'))return;
   const editor=event.target.closest('.clip').querySelector('[data-drink-editor]');if(editor){editor.querySelector('.drink-playhead').style.left=Math.min(100,event.target.currentTime/clipsData.durations[editor.dataset.drinkEditor]*100)+'%';editor.querySelector('.drink-player-clock').textContent=clipClock(event.target.currentTime)+' / '+clipClock(clipsData.durations[editor.dataset.drinkEditor]);}
 },true);
 function rejectDrinkRecord(name){
   openModal(`<h3>驳回这条喝水记录</h3><p class="msub">录像仍保留为纠错素材，驳回后不计喝水次数与水量。</p><div class="outcome-options"><button onclick='saveDrinkOutcome(${JSON.stringify(name)},"no_action")'><strong>没有喝水，是误识别</strong><span>作为没有喝水动作的负样本</span></button><button onclick='saveDrinkOutcome(${JSON.stringify(name)},"dry_lick")'><strong>舔水了，但没喝到水</strong><span>保留动作正样本，不计水量</span></button></div><label>补充原因（可选）<input id="drinkOutcomeReason" maxlength="500"></label>`);
 }
 
-function drinkVideo(name){return [...$('#modalCard').querySelectorAll('.clip'),...$('#recGrid').querySelectorAll('.clip')].find(c=>c.dataset.name===name)?.querySelector('video');}
+function drinkVideo(name){const root=page==='lab'?'#labelClips':'#recGrid';return [...$('#modalCard').querySelectorAll('.clip'),...$(root).querySelectorAll('.clip')].find(c=>c.dataset.name===name)?.querySelector('video');}
 function toggleDrinkVideo(name){const video=drinkVideo(name);if(video.paused)video.play().catch(()=>toast('视频暂时无法播放','err'));else video.pause();}
 function toggleDrinkSound(name,button){const video=drinkVideo(name);video.muted=!video.muted;button.textContent=video.muted?'声音 关':'声音 开';}
 function fullscreenDrinkVideo(name){const video=drinkVideo(name);video.requestFullscreen?.();}
-for(const eventName of ['play','pause','ended'])document.addEventListener(eventName,event=>{if(!event.target.matches('#recGrid video,#modalCard .record-card video'))return;const button=event.target.closest('.clip').querySelector('.drink-toggle');if(button)button.textContent=event.target.paused?'▶':'Ⅱ';},true);
-document.addEventListener('click',event=>{if(event.target.matches('#recGrid video,#modalCard .record-card video'))toggleDrinkVideo(event.target.closest('.clip').dataset.name);});
+for(const eventName of ['play','pause','ended'])document.addEventListener(eventName,event=>{if(!event.target.matches('#recGrid video,#labelClips video,#modalCard .record-card video'))return;const button=event.target.closest('.clip').querySelector('.drink-toggle');if(button)button.textContent=event.target.paused?'▶':'Ⅱ';},true);
+document.addEventListener('click',event=>{if(event.target.matches('#recGrid video,#labelClips video,#modalCard .record-card video'))toggleDrinkVideo(event.target.closest('.clip').dataset.name);});
 
 function updateDrinkZoom(editor){
   const name=editor.dataset.drinkEditor,d=drinkDraft(name),zoom=d.zoom||1,duration=clipsData.durations[name],content=editor.querySelector('.drink-timeline-content');
@@ -1427,7 +1429,7 @@ async function confirmCodexProposal(id){
 }
 function openAgentReviewClip(name){
   const duration=clipsData.durations[name];
-  openModal(`<h3>检查 Agent 喝水轨</h3><div class="clip record-card" data-name="${esc(name)}"><div class="thumb"><video class="inline-clip" src="/clips/${encodeURIComponent(name)}" preload="metadata" playsinline></video></div>${drinkTrackMarkup(name)}</div><p class="msub">确认区间会将这段确认为喝水；如果未实际喝到水，请回到复核页选择正确结果。</p>`);
+  openModal(`<h3>检查喝水动作轨</h3><div class="clip record-card" data-name="${esc(name)}"><div class="thumb"><video class="inline-clip" src="/clips/${encodeURIComponent(name)}" preload="metadata" playsinline></video></div>${drinkTrackMarkup(name)}</div><p class="msub">确认区间会将这段确认为喝水；如果未实际喝到水，请回到复核页选择正确结果。</p>`);
   refreshDrinkTracks($('#modalCard'));
 }
 async function openCodexBatch(){
