@@ -68,6 +68,12 @@ class Config:
     ai_base_url: str = "https://openrouter.ai/api/v1"
     ai_api_key: str = ""                              # OpenRouter key，写在 config.json（已 gitignore）
     ai_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    # 手动 Codex Agent 预标注，与自动视觉裁判分别配置；只在点击分析时发送抽帧。
+    codex_base_url: str = ""
+    codex_api_key: str = ""
+    codex_model: str = ""
+    codex_daily_budget: int = 40
+    codex_max_video_seconds: int = 1800
     ai_daily_budget: int = 40
     ai_min_interval_seconds: float = 60.0
     ai_input_mode: str = "frames"

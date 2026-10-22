@@ -412,6 +412,8 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
         from catcam.ai_service import test_service
         return test_service(body,cfg,latest.get(),feedback.db_path)
 
+    from catcam.codex_video import CodexVideoAgent
+    codex_agent = CodexVideoAgent(cfg,config_path,feedback,cfg.clips_dir)
     app = create_app(
         stats, recorder, feedback, latest.get, cfg.clips_dir, trainer,
         registry=registry, active_model=active_model, video_trainer=video_trainer,
@@ -426,6 +428,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
         setup_provider=setup_state, setup_update=update_setup,
         ai_status_provider=lambda:ai_queue.status() if ai_queue else {'enabled':False},
         ai_test_provider=test_ai,
+        codex_agent=codex_agent,
         model_review=model_review,
         web_password_hash=cfg.web_password_hash,web_session_secret=cfg.web_session_secret,
         access_password_update=save_access_password,
@@ -658,6 +661,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
                     mux_audio_into(cfg.clips_dir / res.clip_name,
                                    audio_ring.slice(res.audio_start, res.audio_end),
                                    audio_ring.sr)
+        codex_agent.close()
         if audio_ring is not None:
             audio_ring.stop()
         cap.release()

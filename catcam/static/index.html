@@ -170,7 +170,7 @@ applyAppearance();
   </div>
 
   <div class="lab-pane" id="lab-train">
-    <div class="studio-training-advice" data-training-advice role="status"></div>
+    <div class="studio-panel" style="margin-bottom:20px"><div class="studio-panel-head"><div><h2>Codex 素材标注 Agent</h2><p class="note">先生成喝水轨草稿，人工检查保存后再训练。</p></div><div class="review-toolbar-actions"><button class="btn ghost" onclick="openCodexSetup()">配置第三方接口</button><button class="btn" onclick="openCodexJobs()">素材与任务</button></div></div></div><div class="studio-training-advice" data-training-advice role="status"></div>
     <div class="studio-grid"><div class="studio-main">
       <section class="studio-panel"><div class="studio-panel-head"><div><span class="fountain-kicker">01 · 准备数据</span><h2>训练从正确标注开始</h2></div><span id="studioReadiness" class="tag">正在读取</span></div><div class="studio-data-grid"><div><span>等待人工标注</span><strong id="dsUn">—</strong><small>段候选录像</small></div><div class="highlight"><span>新增训练数据</span><strong id="dsNew">—</strong><small>已标注，尚未训练</small></div><div><span>已参与训练</span><strong id="dsTr">—</strong><small>段人工标注</small></div><div><span>喝水 / 没喝动作</span><strong id="dsBal">—</strong><small>启动训练每类至少 4 段</small></div></div><button class="studio-link" onclick="setLab('label',$('#labTabs').children[0])">去复核和纠错 <span>→</span></button></section>
       <section class="studio-panel studio-training"><div class="studio-panel-head"><div><span class="fountain-kicker">02 · 开始训练</span><h2>让模型适应这个场景</h2></div><span class="studio-device">在本机运行</span></div><p class="studio-description">用已确认的喝水与没喝动作训练，再用独立片段检查漏判和误判。</p>

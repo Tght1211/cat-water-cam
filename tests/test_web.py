@@ -721,3 +721,15 @@ def test_zoomed_timeline_samples_only_requested_window(tmp_path):
     assert first[:,-96:].mean()<last[:,:96].mean()
     assert client.get('/clips/clip_1000.mp4/timeline.jpg?parts=17').status_code==400
     assert client.get('/clips/clip_1000.mp4/timeline.jpg?parts=4&part=4').status_code==400
+
+
+def test_agent_draft_becomes_ground_truth_only_after_human_save(tmp_path):
+    app,stats,recorder,feedback=_build(tmp_path)
+    recorder.save_clip([np.zeros((48,64,3),np.uint8)]*10,timestamp=1)
+    client=TestClient(app)
+    assert feedback.label_meta('clip_1000.mp4') is None
+    response=client.post('/api/clips/clip_1000.mp4/drinking-intervals',json={'segments':[[.5,1.5]],'confirm_drinking':True})
+    assert response.status_code==200
+    meta=feedback.clip_metadata()['meta']['clip_1000.mp4']
+    assert meta['source']=='human' and meta['is_drinking']
+    assert meta['drinking_intervals']==[[.5,1.5]]

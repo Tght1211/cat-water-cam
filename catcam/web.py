@@ -66,6 +66,7 @@ class FeedbackBody(BaseModel):
 
 class DrinkIntervalsBody(BaseModel):
     segments: list[list[float]]
+    confirm_drinking: bool = False
 
 
 def create_app(
@@ -100,6 +101,7 @@ def create_app(
     reminder_update=None,
     replay_archive=None,
     live_status_provider=None,
+    codex_agent=None,
 ) -> FastAPI:
     app = FastAPI()
     install_access(app,web_password_hash,web_session_secret,access_password_update)
@@ -241,6 +243,44 @@ def create_app(
             return ai_test_provider(body)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    def _codex_service():
+        if codex_agent is None:
+            raise HTTPException(status_code=400,detail='当前进程未启用 Codex Agent，请运行完整监控服务')
+        return codex_agent
+
+    @app.get('/api/agent/settings')
+    def agent_settings():
+        return codex_agent.settings() if codex_agent else {'enabled':False}
+
+    @app.post('/api/agent/settings')
+    def agent_configure(body: dict):
+        try:return _codex_service().configure(body)
+        except (ValueError,TypeError,AttributeError) as error:
+            raise HTTPException(status_code=400,detail=str(error) if isinstance(error,ValueError) else '配置字段格式无效')
+
+    @app.post('/api/agent/jobs')
+    def agent_start(body: dict):
+        if body.get('send_frames') is not True:
+            raise HTTPException(status_code=400,detail='请确认向已配置服务发送所选视频抽帧')
+        try:return _codex_service().start(body.get('clips'))
+        except (ValueError,TypeError) as error:
+            raise HTTPException(status_code=400,detail=str(error))
+
+    @app.post('/api/agent/test')
+    def agent_test():
+        try:return _codex_service().test()
+        except ValueError as error:raise HTTPException(status_code=400,detail=str(error))
+
+    @app.get('/api/agent/jobs')
+    def agent_jobs():
+        return _codex_service().status()
+
+    @app.get('/api/agent/jobs/{ident}')
+    def agent_job(ident: str):
+        result=_codex_service().status(ident)
+        if not result['jobs']:raise HTTPException(status_code=404,detail='任务不存在')
+        return result['jobs'][0]
 
     @app.get('/api/ai/status')
     def ai_status():
@@ -994,7 +1034,12 @@ def create_app(
         if not path.is_file() or path.is_symlink():
             raise HTTPException(status_code=404,detail='录像不存在')
         try:
-            segments, seconds = feedback.set_intervals(name, body.segments, clip_duration(path))
+            duration=clip_duration(path)
+            from catcam.drink_intervals import normalize_intervals
+            validated=normalize_intervals(body.segments,duration)
+            if body.confirm_drinking:
+                feedback.label_clip(path,True,source='human',outcome='drinking')
+            segments, seconds = feedback.set_intervals(name, validated, duration)
         except ValueError as error:
             raise HTTPException(status_code=400,detail=str(error))
         return {'segments':segments,'seconds':seconds,'calibration':dispenser.calibration(stats) if dispenser is not None else {}}
