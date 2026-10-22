@@ -1318,29 +1318,64 @@ async function saveDrinkRanges(name,button){
     refreshDrinkTracks();loadDispenser();loadStats();toast('已保存动作区间，并更新时长与水量估值');
   }catch(error){toast(error.message,'err');}finally{button.disabled=false;}
 }
+// 首次拖动也主动加载视频；元数据到达前只保留最后一次定位。
+const pendingDrinkSeeks=new WeakMap();
+function paintDrinkPosition(editor,seconds){
+  const duration=clipsData.durations[editor.dataset.drinkEditor];
+  editor.querySelector('.drink-playhead').style.left=Math.max(0,Math.min(100,seconds/duration*100))+'%';
+  editor.querySelector('.drink-player-clock').textContent=clipClock(seconds)+' / '+clipClock(duration);
+}
+function seekDrinkPosition(editor,seconds){
+  const video=editor.closest('.clip').querySelector('video');
+  seconds=Math.max(0,Math.min(clipsData.durations[editor.dataset.drinkEditor],seconds));
+  paintDrinkPosition(editor,seconds);
+  if(video.readyState===0){
+    const waiting=pendingDrinkSeeks.has(video);
+    pendingDrinkSeeks.set(video,seconds);
+    if(!waiting){
+      video.addEventListener('loadedmetadata',()=>{
+        const target=pendingDrinkSeeks.get(video);pendingDrinkSeeks.delete(video);
+        if(target!==undefined){video.currentTime=Math.min(target,video.duration);paintDrinkPosition(editor,target);}
+      },{once:true});
+      video.addEventListener('error',()=>pendingDrinkSeeks.delete(video),{once:true});
+      video.preload='auto';video.load();
+    }
+  }else video.currentTime=Math.min(seconds,video.duration);
+}
+function drinkPointerSeconds(track,event,duration){
+  const rect=track.getBoundingClientRect();
+  return Math.max(0,Math.min(duration,(event.clientX-rect.left)/rect.width*duration));
+}
 let drinkDrag=null;
 document.addEventListener('pointerdown',event=>{
-  const track=event.target.closest('.drink-track,.drink-video-track');if(!track)return;
+  if(event.button!==0||drinkDrag)return;
+  const handle=event.target.closest('.drink-playhead');
+  const track=handle?handle.parentElement.querySelector('.drink-video-track'):event.target.closest('.drink-track,.drink-video-track');if(!track)return;
   const editor=track.closest('[data-drink-editor]'),name=editor.dataset.drinkEditor,region=event.target.closest('[data-range]'),duration=clipsData.durations[name],d=drinkDraft(name);
-  const seconds=Math.max(0,Math.min(duration,(event.clientX-track.getBoundingClientRect().left)/track.clientWidth*duration));
+  const seconds=drinkPointerSeconds(track,event,duration);
   const video=editor.closest('.clip').querySelector('video');
-  if(!region){event.preventDefault();video.currentTime=seconds;drinkDrag={seek:true,editor,track,pointer:event.pointerId,duration};track.setPointerCapture(event.pointerId);return;}
+  if(!region){event.preventDefault();video.pause();drinkDrag={seek:true,editor,track,pointer:event.pointerId,duration};track.setPointerCapture(event.pointerId);seekDrinkPosition(editor,seconds);return;}
   event.preventDefault();video.pause();d.selected=Number(region.dataset.range);
   drinkDrag={name,editor,track,pointer:event.pointerId,x:event.clientX,pair:[...d.segments[d.selected]],edge:event.target.dataset.edge||'move',duration};
   track.setPointerCapture(event.pointerId);updateDrinkTrack(editor);
 });
 document.addEventListener('pointermove',event=>{
   if(!drinkDrag||drinkDrag.pointer!==event.pointerId)return;
-  const g=drinkDrag;if(g.seek){const video=g.editor.closest('.clip').querySelector('video');video.currentTime=Math.max(0,Math.min(g.duration,(event.clientX-g.track.getBoundingClientRect().left)/g.track.clientWidth*g.duration));return;}
+  const g=drinkDrag;if(g.seek){event.preventDefault();seekDrinkPosition(g.editor,drinkPointerSeconds(g.track,event,g.duration));return;}
   const d=drinkDraft(g.name),delta=(event.clientX-g.x)/g.track.clientWidth*g.duration,[start,end]=g.pair,min=Math.min(.1,g.duration/100);
   let pair;
   if(g.edge==='start')pair=[Math.max(0,Math.min(end-min,start+delta)),end];
   else if(g.edge==='end')pair=[start,Math.min(g.duration,Math.max(start+min,end+delta))];
   else{const offset=Math.max(-start,Math.min(g.duration-end,delta));pair=[start+offset,end+offset];}
   d.segments[d.selected]=pair;d.dirty=true;updateDrinkTrack(g.editor);
-  const video=g.editor.closest('.clip').querySelector('video');video.currentTime=g.edge==='end'?pair[1]:pair[0];
+  seekDrinkPosition(g.editor,g.edge==='end'?pair[1]:pair[0]);
 });
-for(const type of ['pointerup','pointercancel'])document.addEventListener(type,()=>{drinkDrag=null;});
+for(const type of ['pointerup','pointercancel','lostpointercapture'])document.addEventListener(type,event=>{
+  const g=drinkDrag;if(!g||event.pointerId!==g.pointer)return;
+  if(type==='pointerup'&&g.seek)seekDrinkPosition(g.editor,drinkPointerSeconds(g.track,event,g.duration));
+  drinkDrag=null;
+  if(g.track.hasPointerCapture(event.pointerId))g.track.releasePointerCapture(event.pointerId);
+});
 document.addEventListener('change',event=>{
   if(!event.target.matches('[data-drink-start],[data-drink-end]'))return;
   const editor=event.target.closest('[data-drink-editor]'),name=editor.dataset.drinkEditor,d=drinkDraft(name),start=Number(editor.querySelector('[data-drink-start]').value),end=Number(editor.querySelector('[data-drink-end]').value);
@@ -1349,7 +1384,8 @@ document.addEventListener('change',event=>{
 });
 document.addEventListener('timeupdate',event=>{
   if(!event.target.matches('#recGrid video,#labelClips video,#modalCard .record-card video'))return;
-  const editor=event.target.closest('.clip').querySelector('[data-drink-editor]');if(editor){editor.querySelector('.drink-playhead').style.left=Math.min(100,event.target.currentTime/clipsData.durations[editor.dataset.drinkEditor]*100)+'%';editor.querySelector('.drink-player-clock').textContent=clipClock(event.target.currentTime)+' / '+clipClock(clipsData.durations[editor.dataset.drinkEditor]);}
+  const editor=event.target.closest('.clip').querySelector('[data-drink-editor]');
+  if(editor&&!pendingDrinkSeeks.has(event.target)&&drinkDrag?.editor!==editor)paintDrinkPosition(editor,event.target.currentTime);
 },true);
 function rejectDrinkRecord(name){
   openModal(`<h3>驳回这条喝水记录</h3><p class="msub">录像仍保留为纠错素材，驳回后不计喝水次数与水量。</p><div class="outcome-options"><button onclick='saveDrinkOutcome(${JSON.stringify(name)},"no_action")'><strong>没有喝水，是误识别</strong><span>作为没有喝水动作的负样本</span></button><button onclick='saveDrinkOutcome(${JSON.stringify(name)},"dry_lick")'><strong>舔水了，但没喝到水</strong><span>保留动作正样本，不计水量</span></button></div><label>补充原因（可选）<input id="drinkOutcomeReason" maxlength="500"></label>`);

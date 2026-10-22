@@ -728,3 +728,8 @@ main{position:relative;z-index:1;margin-left:236px;padding:30px 38px 60px}
 #labelClips .review-timeline{padding:12px 16px;border-bottom:1px solid var(--line)}
 .review-timeline .drink-agent-actions,.review-timeline .drink-track-heading,.review-timeline .drink-track,.review-timeline .drink-range-controls,.review-timeline .drink-track-summary,.review-timeline .drink-volume-note{display:none}
 .review-timeline .drink-player-toolbar{margin-bottom:10px;gap:7px}.review-timeline .drink-player-toolbar button{padding:5px 7px}.review-timeline .drink-video-heading{align-items:center;gap:6px}.review-timeline .drink-zoom{gap:4px}.review-timeline .drink-video-track{height:40px}.review-timeline .drink-track-axis{margin-bottom:0;font-size:9px}
+
+/* 游标提供可抓取区域，缩略帧与游标均支持触摸拖动。 */
+.drink-track-stack>.drink-playhead{pointer-events:auto;cursor:ew-resize;touch-action:none;width:14px;margin-left:-7px;background:linear-gradient(to right,transparent 6px,var(--aqua) 6px,var(--aqua) 8px,transparent 8px)}
+.drink-playhead>span{left:2px}
+.drink-track-stack{user-select:none;-webkit-user-select:none}

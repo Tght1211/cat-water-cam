@@ -1,0 +1,24 @@
+// 验证未加载视频首次拖动、游标拖动及放大后的定位，不依赖摄像头。
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync('catcam/static/app.js','utf8'),listeners={},media={};
+const head={style:{}},clock={};
+let loads=0,paused=0,captured=false;
+const video={readyState:0,duration:100,currentTime:0,pause(){paused++;},load(){loads++;},addEventListener(n,fn){media[n]=fn;}};
+const editor={dataset:{drinkEditor:'test.mp4'},closest:()=>({querySelector:()=>video}),querySelector:s=>s==='.drink-playhead'?head:clock};
+const track={closest:()=>editor,getBoundingClientRect:()=>({left:-100,width:1000}),setPointerCapture(){captured=true;},hasPointerCapture:()=>captured,releasePointerCapture(){captured=false;}};
+const handle={parentElement:{querySelector:()=>track}};
+const target={closest:s=>s==='.drink-playhead'?handle:null};
+const context=vm.createContext({WeakMap,Math,clipsData:{durations:{'test.mp4':100}},drinkDraft:()=>({}),clipClock:n=>String(n),document:{addEventListener:(n,fn)=>listeners[n]=fn}});
+vm.runInContext(source.slice(source.indexOf('const pendingDrinkSeeks='),source.indexOf("document.addEventListener('change',event=>{",source.indexOf('const pendingDrinkSeeks='))),context);
+const event=(x,id=1)=>({button:0,target,clientX:x,pointerId:id,preventDefault(){}});
+listeners.pointerdown(event(100));
+assert.equal(loads,1);assert.equal(paused,1);assert.equal(head.style.left,'20%');assert(captured);
+listeners.pointermove(event(500));assert.equal(loads,1);assert.equal(head.style.left,'60%');
+listeners.pointerup(event(600,2));assert(captured,'其他手指不能终止当前拖动');
+listeners.pointerup(event(600));assert(!captured);assert.equal(head.style.left,'70%');
+video.readyState=1;media.loadedmetadata();assert.equal(video.currentTime,70);
+listeners.pointerdown(event(800));assert.equal(video.currentTime,90);
+listeners.pointermove(event(1200));assert.equal(video.currentTime,100);
+listeners.pointerup(event(-200));assert.equal(video.currentTime,0);
+assert.equal(loads,1);
+console.log('Passed: cold video seek, draggable playhead, latest pending target, zoom coordinates, bounds and pointer ownership.');
