@@ -634,10 +634,8 @@ function needsReview(n){
   if(!isReviewCandidate(n))return false;
   const m=(clipsData.meta||{})[n];
   if(m&&m.source==='human')return false;
-  if(!m)return true; // 测试模式的高分预测也需人工确认，才能进入饮水记录
-  const p=modelDetail(n);
-  // 旧的影子预测没有保存概率，但已有明确结论；留在「全部」供抽查，不重复塞满复核队列。
-  return !p||p.confidence==null||Math.abs(p.confidence-(p.threshold??.5))<.15;
+  // 与分页、侧栏一致：尚未经人工确认的候选均可复核，包括机器高置信标签。
+  return true;
 }
 function modelTag(n){
   if(clipsData.candidate_only?.[n])return `<span class="mpred n">弱光轮廓候选 · 请确认喝水动作</span>`;
@@ -742,9 +740,11 @@ function labelCard(n,i){
 }
 function renderLabelClips(){
   const box=$('#labelClips'); if(!box||!clipsData)return;
-  if(!clipsData.clips.length){box.innerHTML=`<div class="empty" style="grid-column:1/-1"><span class="eico">🎬</span>还没有视频可标注。接上摄像头跑 <code>python -m catcam</code>。</div>`;return;}
   const items=labelItems();
-  if(!items.length){box.innerHTML='<div class="empty" style="grid-column:1/-1">当前页没有视频</div>';appendLabelMore();return;}
+  if(!items.length){
+    const message=labState.counts?.all===0?'暂无候选录像，录制后会出现在这里。':labelFilter==='review'?'当前没有待复核视频，可切换「全部」查看已复核录像。':'当前筛选下没有视频，可切换其他筛选查看。';
+    box.innerHTML=`<div class="empty" style="grid-column:1/-1">${message}</div>`;appendLabelMore();return;
+  }
   box.innerHTML=items.map(labelCard).join('');
   appendLabelMore();
 }

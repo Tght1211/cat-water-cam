@@ -636,3 +636,22 @@ def test_thumbnails_for_different_clips_decode_concurrently(tmp_path, monkeypatc
     with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(pool.map(lambda name: client.get(f'/clips/{name}/thumb.jpg'), (first, second)))
     assert all(r.status_code == 200 for r in responses)
+
+
+def test_high_confidence_machine_labels_remain_reviewable_like_sidebar(tmp_path):
+    client, stats, feedback, recorder, names = _paged_fixture(tmp_path, 5)
+    feedback.record_machine_label(names[0], True, confidence=1.0)
+    feedback.record_machine_label(names[1], False, confidence=0.0)
+    feedback.record_machine_label(names[2], True, source='ai', confidence=.99)
+    with feedback._conn() as conn:
+        conn.execute("INSERT INTO labels(clip_name,is_drinking,source) VALUES (?,1,'human')", (names[3],))
+    for i, name in enumerate(names[:3]):
+        stats.set_prediction(name, int(i != 1), 'v1', 0.0 if i == 1 else 1.0)
+    page = client.get('/api/clips/page?filter=review').json()
+    summary = client.get('/api/clips/summary').json()
+    assert page['counts']['review'] == len(summary['pending_names']) == 4
+    assert page['clips'] == summary['pending_names']
+    assert names[3] not in page['clips']
+    assert set(names[:3]).issubset(page['clips'])
+    compact = client.get('/api/clips/summary', params={'since': page['snapshot']}).json()
+    assert compact['pending_count'] == page['counts']['review']

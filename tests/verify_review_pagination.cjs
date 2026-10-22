@@ -41,6 +41,22 @@ function data(names,cursor,snapshot='clip_3000.mp4'){
  pending[0](data(['clip_3000.mp4'],null));await old;
  assert.equal(run('labState.names[0]'),'clip_1000.mp4');
  assert.equal(get('#labelClips').innerHTML.includes('clip_3000.mp4'),false);
+ // 机器高置信标签也必须渲染，不能被浏览器二次筛掉。
+ run("labelFilter='review'");
+ handler=async()=>{
+   const result=data(['clip_3000.mp4','clip_2000.mp4'],null);
+   const body=await result.json();
+   body.meta={'clip_3000.mp4':{source:'local',is_drinking:true,confidence:1},'clip_2000.mp4':{source:'ai',is_drinking:false,confidence:.99}};
+   body.prediction_details={'clip_3000.mp4':{drinking:true,confidence:1},'clip_2000.mp4':{drinking:false,confidence:0}};
+   return {ok:true,json:async()=>body};
+ };
+ await run('loadLabelClips()');
+ assert(get('#labelClips').innerHTML.includes('clip_3000.mp4'));
+ assert(get('#labelClips').innerHTML.includes('clip_2000.mp4'));
+ handler=async()=>{const result=data([],null);const body=await result.json();body.counts={all:217,review:0};return {ok:true,json:async()=>body};};
+ await run('loadLabelClips()');
+ assert(get('#labelClips').innerHTML.includes('当前没有待复核视频'));
+ assert(!get('#labelClips').innerHTML.includes('接上摄像头'));
  // 请求失败可重试，不一直显示骨架屏。
  handler=async()=>{throw Error('offline');};await run('loadLabelClips()');
  assert.equal(get('#labelClips').innerHTML,'retry');

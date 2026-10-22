@@ -721,9 +721,8 @@ def create_app(
             if prediction is None and meta.get('source') != 'human' and meta.get('confidence') is not None:
                 prediction = {'drinking': meta['is_drinking'], 'confidence': meta['confidence'], 'threshold': .5}
             human = meta.get('source') == 'human'
-            pending = not human and (not meta or not prediction
-                or prediction['confidence'] is None
-                or abs(prediction['confidence'] - prediction.get('threshold', .5)) < .15)
+            # 机器已给结论仍可人工复核，不能因高置信把侧栏计数中的候选隐藏。
+            pending = not human
             flags = {'all': True, 'review': pending,
                      'yes': bool(prediction and prediction['drinking']),
                      'no': bool(prediction and not prediction['drinking']),
