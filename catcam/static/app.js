@@ -517,14 +517,23 @@ function recItems(){
   const names=new Set(clipsData.clips);
   return (clipsData.drinking_records||clipsData.clips).filter(n=>names.has(n)&&lab[n]===true);
 }
+function recordTime(name){
+  const seconds=clipsData.sessions?.[name]?.presence_start;
+  return Number.isFinite(seconds)&&seconds>0?new Date(seconds*1000):clipTime(name);
+}
+function focusDrinkRecord(name){
+  const card=[...$('#recGrid').querySelectorAll('.clip')].find(el=>el.dataset.name===name);
+  if(card){card.scrollIntoView({behavior:reduceMotion?'instant':'smooth',block:'center'});card.querySelector('video')?.focus({preventScroll:true});}
+}
 function recCard(n,i){
-  const dur=(clipsData.durations||{})[n],t=clipTime(n),en=esc(n),jn=JSON.stringify(n);
-  return `<div class="clip" data-name="${en}" style="--i:${Math.min(i,10)}">
+  const dur=(clipsData.durations||{})[n],t=recordTime(n),en=esc(n),jn=JSON.stringify(n);
+  return `<div class="clip record-card" data-name="${en}" style="--i:${Math.min(i,10)}">
+    <div class="record-time-head"><div><span>${clipsData.sessions?.[n]?.presence_start?'到碗时间':'记录时间'}</span><time datetime="${t?t.toISOString():''}">${t?hhmmss(t):'时间未知'}</time></div><span class="record-date">${t?t.toLocaleDateString('zh-CN'):''}</span></div>
     <div class="thumb">
       <video class="inline-clip" src="/clips/${encodeURIComponent(n)}" data-poster="/clips/${encodeURIComponent(n)}/thumb.jpg" controls preload="none" playsinline></video>
       ${dur?`<span class="dur">录像 ${dur.toFixed(1)} 秒</span>`:''}</div>
     <div class="cmeta"><div class="row">
-      <span class="ctime"><small>发生于</small>${t?hhmmss(t):'时间未知'}</span>
+      <span class="record-confirmed">已确认喝水</span>
       <a class="dlbtn" href="/clips/${encodeURIComponent(n)}" download onclick='this.href=dlUrl(${jn})'>${I.dl}下载</a>
     </div><div class="review-duration"><div><span>${clipsData.meta?.[n]?.drinking_seconds!=null?'喝水时长 · 人工记录':'估算喝水时长'}</span><strong>${clipsData.meta?.[n]?.effective_drinking_seconds??'—'}<small>秒</small></strong></div><button class="review-adjust" onclick='labelDuration(${jn})'>调整时长</button></div><p class="lab-note">${({human:'人工确认',ai:'外部模型确认',local:'模型自动确认'})[clipsData.meta?.[n]?.source]||'已确认'} · ${clipsData.meta?.[n]?.drinking_seconds!=null?'使用人工时长':'按录像时长的 80% 估算'}</p><button class="record-correction" onclick='correctDrinkRecord(${jn})'>修改这条记录</button></div></div>`;
 }
@@ -538,12 +547,12 @@ function renderRecords(){
       还没有确认喝水的回放～<br>喵喵来水碗喝水会自动录像，AI 判定「真喝水」后就会出现在这里。</div>`;
     return;
   }
-  const dayCounts={}; items.forEach(n=>{const k=dayKey(clipTime(n));dayCounts[k]=(dayCounts[k]||0)+1;});
+  const dayCounts={}; items.forEach(n=>{const k=dayKey(recordTime(n));dayCounts[k]=(dayCounts[k]||0)+1;});
   const shown=items.slice(0,recPage*REC_PAGE);
   let html='',lastDay=null;
-  shown.forEach((n,i)=>{const dt=clipTime(n),k=dayKey(dt);
+  shown.forEach((n,i)=>{const dt=recordTime(n),k=dayKey(dt);
     if(k!==lastDay){lastDay=k;
-      html+=`<div class="grp-head"><span class="grp-dot"></span>${dayLabel(dt)}<span class="grp-n">${dayCounts[k]} 次</span></div>`;}
+      html+=`<div class="grp-head"><span class="grp-dot"></span>${dayLabel(dt)}<span class="grp-n">${dayCounts[k]} 次</span><span class="record-day-date">${dt?dt.toLocaleDateString('zh-CN'):''} · 最新在前</span><div class="record-day-times" aria-label="当天喝水时间点">${shown.filter(name=>dayKey(recordTime(name))===k).map(name=>`<button onclick='focusDrinkRecord(${JSON.stringify(name)})'>${hhmmss(recordTime(name))}</button>`).join('')}</div></div>`;}
     html+=recCard(n,i%REC_PAGE);});
   const remaining=items.length-shown.length;
   if(remaining>0)html+=`<div class="more" id="recMore" onclick="recPage++;renderRecords()">下滑加载更多 · 还有 ${remaining} 段</div>`;
