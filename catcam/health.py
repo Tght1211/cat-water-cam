@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from catcam.database import connect
+from catcam.review_policy import count_pending_reviews
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,8 +53,7 @@ def health_summary(stats, monitoring, now=None):
         coverage = monitoring.coverage(d.timestamp(), stop.timestamp()) if monitoring else 0
         events = stats.events_between(d.timestamp(), stop.timestamp())
         with stats._conn() as c:
-            pending_day = c.execute('SELECT COUNT(*) FROM events e LEFT JOIN labels l ON e.clip_name=l.clip_name WHERE e.ts>=? AND e.ts<? AND e.review_candidate=1 AND l.clip_name IS NULL',
-                                    (d.timestamp(), stop.timestamp())).fetchone()[0]
+            pending_day = count_pending_reviews(c, d.timestamp(), stop.timestamp())
         history.append({'date': d.strftime('%Y-%m-%d'), 'count': len(events),
                         'coverage_hours': round(coverage/3600, 2), 'pending_review': pending_day,
                         'comparable': coverage >= 18*3600 and pending_day == 0})
@@ -64,7 +64,7 @@ def health_summary(stats, monitoring, now=None):
     elapsed = max(1, end-start.timestamp())
     coverage_ratio = min(1, coverage/elapsed)
     with stats._conn() as c:
-        pending = c.execute('SELECT COUNT(*) FROM events e LEFT JOIN labels l ON e.clip_name=l.clip_name WHERE e.ts>=? AND e.ts<? AND e.review_candidate=1 AND l.clip_name IS NULL', (start.timestamp(),end)).fetchone()[0]
+        pending = count_pending_reviews(c, start.timestamp(), end)
         last = c.execute('SELECT MAX(e.ts) FROM events e JOIN labels l ON l.clip_name=e.clip_name WHERE l.is_drinking=1').fetchone()[0]
     status, message = 'insufficient_data', '有效监控满18小时的历史日不足3天，尚不能建立饮水习惯基线。'
     # 当天只与历史相同时间段比较，避免上午与历史整天的总次数相比。

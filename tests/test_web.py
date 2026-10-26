@@ -639,7 +639,7 @@ def test_thumbnails_for_different_clips_decode_concurrently(tmp_path, monkeypatc
     assert all(r.status_code == 200 for r in responses)
 
 
-def test_high_confidence_machine_labels_remain_reviewable_like_sidebar(tmp_path):
+def test_high_confidence_labels_leave_review_queue_but_remain_available_for_correction(tmp_path):
     client, stats, feedback, recorder, names = _paged_fixture(tmp_path, 5)
     feedback.record_machine_label(names[0], True, confidence=1.0)
     feedback.record_machine_label(names[1], False, confidence=0.0)
@@ -650,12 +650,29 @@ def test_high_confidence_machine_labels_remain_reviewable_like_sidebar(tmp_path)
         stats.set_prediction(name, int(i != 1), 'v1', 0.0 if i == 1 else 1.0)
     page = client.get('/api/clips/page?filter=review').json()
     summary = client.get('/api/clips/summary').json()
-    assert page['counts']['review'] == len(summary['pending_names']) == 4
+    assert page['counts']['review'] == len(summary['pending_names']) == 2
     assert page['clips'] == summary['pending_names']
     assert names[3] not in page['clips']
-    assert set(names[:3]).issubset(page['clips'])
+    assert page['clips'] == [names[2], names[4]]
+    all_data = client.get('/api/clips/page?filter=all').json()
+    assert set(names).issubset(all_data['clips'])
+    assert not all_data['review_required'][names[0]]
+    assert not all_data['review_required'][names[1]]
+    assert all_data['review_required'][names[2]]  # 外部 AI 99% 仍未达 99.5% 的高把握阈值
     compact = client.get('/api/clips/summary', params={'since': page['snapshot']}).json()
     assert compact['pending_count'] == page['counts']['review']
+
+
+def test_weak_video_stays_pending_despite_extreme_score_and_human_confirmation_wins(tmp_path):
+    client, stats, feedback, recorder, names = _paged_fixture(tmp_path, 2)
+    for name in names:
+        feedback.record_machine_label(name, False, confidence=0.0)
+        with stats._conn() as c:
+            c.execute('UPDATE events SET candidate_only=1 WHERE clip_name=?', (name,))
+    assert client.get('/api/clips/page?filter=review').json()['clips'] == names
+    with feedback._conn() as c:
+        c.execute("UPDATE labels SET source='human' WHERE clip_name=?", (names[0],))
+    assert client.get('/api/clips/summary').json()['pending_names'] == [names[1]]
 
 
 def test_trend_calendar_periods_and_daily_totals(tmp_path):

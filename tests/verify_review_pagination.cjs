@@ -1,10 +1,10 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
-const source=fs.readFileSync(process.argv[2]||'/tmp/catcam-push-main-20261017/catcam/static/app.js','utf8');
+const source=fs.readFileSync(process.argv[2]||'catcam/static/app.js','utf8');
 const nodes=new Map(),requests=[];
 const get=key=>{if(!nodes.has(key))nodes.set(key,{innerHTML:'',textContent:'',hidden:false,querySelectorAll:()=>[],insertAdjacentHTML(where,html){this.innerHTML+=html;}});return nodes.get(key);};
 let handler;
 const context=vm.createContext({AbortController,URLSearchParams,setTimeout,clearTimeout,console,
- $:get,$$:()=>[],clipsData:null,skeletons:()=>'<skeleton>',
+ $:get,$$:()=>[],clipsData:null,skeletons:()=>'<skeleton>',refreshDrinkTracks:()=>{},
  clipLoadError:(selector)=>get(selector).innerHTML='retry',
  fetch:async(url,opts)=>{requests.push(url);assert(url.startsWith('/api/clips/page?'));return handler(url,opts);},
  isReviewCandidate:n=>context.clipsData.review_candidates?.[n]!==false,
@@ -14,7 +14,7 @@ vm.runInContext("labelCard=(n)=>'<card>'+n+'</card>';",context);
 const run=code=>vm.runInContext(code,context);
 function data(names,cursor,snapshot='clip_3000.mp4'){
  const d={clips:names,next_cursor:cursor,snapshot,counts:{all:3,review:3,yes:0,no:0},recording_fps:30,retention_days:3};
- for(const key of ['labels','durations','meta','notes','review_candidates','candidate_only','water_review','predictions','prediction_details'])d[key]={};
+ for(const key of ['labels','durations','meta','notes','review_candidates','review_required','candidate_only','water_review','predictions','prediction_details'])d[key]={};
  for(const n of names){d.labels[n]=null;d.meta[n]=null;d.review_candidates[n]=true;}
  return {ok:true,json:async()=>d};
 }
@@ -41,18 +41,22 @@ function data(names,cursor,snapshot='clip_3000.mp4'){
  pending[0](data(['clip_3000.mp4'],null));await old;
  assert.equal(run('labState.names[0]'),'clip_1000.mp4');
  assert.equal(get('#labelClips').innerHTML.includes('clip_3000.mp4'),false);
- // 机器高置信标签也必须渲染，不能被浏览器二次筛掉。
+ // 待复核只显示服务端要求复核的结果；全部仍能抽查高把握标签。
  run("labelFilter='review'");
  handler=async()=>{
    const result=data(['clip_3000.mp4','clip_2000.mp4'],null);
    const body=await result.json();
    body.meta={'clip_3000.mp4':{source:'local',is_drinking:true,confidence:1},'clip_2000.mp4':{source:'ai',is_drinking:false,confidence:.99}};
    body.prediction_details={'clip_3000.mp4':{drinking:true,confidence:1},'clip_2000.mp4':{drinking:false,confidence:0}};
+   body.review_required={'clip_3000.mp4':false,'clip_2000.mp4':true};
    return {ok:true,json:async()=>body};
  };
  await run('loadLabelClips()');
- assert(get('#labelClips').innerHTML.includes('clip_3000.mp4'));
+ assert(!get('#labelClips').innerHTML.includes('clip_3000.mp4'));
  assert(get('#labelClips').innerHTML.includes('clip_2000.mp4'));
+ run("labelFilter='all'");await run('loadLabelClips()');
+ assert(get('#labelClips').innerHTML.includes('clip_3000.mp4'));
+ run("labelFilter='review'");
  handler=async()=>{const result=data([],null);const body=await result.json();body.counts={all:217,review:0};return {ok:true,json:async()=>body};};
  await run('loadLabelClips()');
  assert(get('#labelClips').innerHTML.includes('当前没有待复核视频'));

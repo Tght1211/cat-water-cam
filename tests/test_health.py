@@ -31,6 +31,19 @@ def test_no_record_does_not_imply_no_drinking(tmp_path):
     assert h['coverage_hours'] == 0
 
 
+def test_health_only_counts_unresolved_candidates(tmp_path):
+    from catcam.feedback import FeedbackStore
+    s = StatsStore(tmp_path/'db')
+    f = FeedbackStore(tmp_path/'db', tmp_path/'training')
+    now = datetime(2026,10,2,12)
+    for name, score, weak in [('certain', 0, False), ('uncertain', .3, False), ('weak', 0, True)]:
+        s.record_event(now.timestamp()-1, name, candidate_only=weak)
+        f.record_machine_label(name, False, confidence=score)
+    # 重复事件只要求复核同一段一次。
+    s.record_event(now.timestamp()-1, 'uncertain')
+    assert health_summary(s, None, now)['pending_review'] == 2
+
+
 def test_health_compares_same_time_and_requires_coverage(tmp_path):
     import sqlite3
     s = StatsStore(tmp_path/'db'); m = MonitoringStore(tmp_path/'db')

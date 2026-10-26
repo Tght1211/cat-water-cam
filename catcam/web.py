@@ -28,6 +28,7 @@ from catcam.recorder import ClipRecorder
 from catcam.feedback import FeedbackStore
 from catcam.stats import StatsStore, bucket_events, day_bounds
 from catcam.health import health_summary
+from catcam.review_policy import needs_review
 from catcam.access import install_access
 from catcam.replay import ReplayArchive
 from urllib.error import HTTPError, URLError
@@ -815,6 +816,9 @@ def create_app(
                 "durations": {n: round(stored['durations'][n], 1) if n in stored['durations'] else None for n in names},
                 "review_candidates": {n: events.get(n, {}).get('review_candidate', True)
                                       or (meta[n] or {}).get('source') == 'human' for n in names},
+                "review_required": {n: needs_review(meta[n], events.get(n, {}).get('candidate_only', False))
+                                    and (events.get(n, {}).get('review_candidate', True)
+                                         or (meta[n] or {}).get('source') == 'human') for n in names},
                 "notes": stored['notes'],
                 "candidate_only": {n: events.get(n, {}).get('candidate_only', False) for n in names},
                 "water_review": {n: events.get(n, {}).get('water_review', False) for n in names},
@@ -850,8 +854,7 @@ def create_app(
             if prediction is None and meta.get('source') != 'human' and meta.get('confidence') is not None:
                 prediction = {'drinking': meta['is_drinking'], 'confidence': meta['confidence'], 'threshold': .5}
             human = meta.get('source') == 'human'
-            # 机器已给结论仍可人工复核，不能因高置信把侧栏计数中的候选隐藏。
-            pending = not human
+            pending = data['review_required'][name]
             flags = {'all': True, 'review': pending,
                      'yes': bool(prediction and prediction['drinking']),
                      'no': bool(prediction and not prediction['drinking']),
@@ -862,7 +865,7 @@ def create_app(
                 matches.append(name)
         names = matches[:limit]
         # 只返回本页元信息，不将全量文件名/标注传给浏览器。
-        fields = ('labels', 'durations', 'meta', 'notes', 'review_candidates',
+        fields = ('labels', 'durations', 'meta', 'notes', 'review_candidates', 'review_required',
                   'candidate_only', 'water_review', 'predictions', 'prediction_details')
         page = {key: {n: data[key][n] for n in names if n in data[key]} for key in fields}
         page.update({key: data[key] for key in ('max_clips', 'retention_days', 'recording_fps')})
@@ -872,15 +875,14 @@ def create_app(
 
     @app.get('/api/clips/summary')
     def clip_summary(since: str | None = None):
-        names=[p.name for p in recorder.list_clips()]
-        candidates=stats.review_candidates()
-        with feedback._conn() as conn:
-            sources=dict(conn.execute('SELECT clip_name,source FROM labels'))
-        review=[n for n in names if candidates.get(n,True) or sources.get(n)=='human']
+        data=clip_list_data(include_records=False)
+        names=data['clips']
+        review=[n for n in names if data['review_candidates'][n]]
+        pending=[n for n in review if data['review_required'][n]]
         if since is not None:
-            return {'pending_count': sum(sources.get(n) != 'human' for n in review),
+            return {'pending_count': len(pending),
                     'new_count': sum(n > since for n in review)}
-        return {'review_names':review,'pending_names':[n for n in review if sources.get(n)!='human'],
+        return {'review_names':review,'pending_names':pending,
                 'clips':names}
 
     def existing_clip(name):

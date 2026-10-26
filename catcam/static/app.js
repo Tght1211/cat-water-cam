@@ -659,15 +659,16 @@ function needsReview(n){
   if(!isReviewCandidate(n))return false;
   const m=(clipsData.meta||{})[n];
   if(m&&m.source==='human')return false;
-  // 与分页、侧栏一致：尚未经人工确认的候选均可复核，包括机器高置信标签。
-  return true;
+  // 采用服务端统一口径；旧页面缓存缺字段时保留待复核。
+  return clipsData.review_required?.[n]??true;
 }
 function modelTag(n){
   if(clipsData.candidate_only?.[n])return `<span class="mpred n">弱光轮廓候选 · 请确认喝水动作</span>`;
   const p=modelDetail(n);
   if(!p)return `<span class="tag mute"><i></i>模型未判断</span>`;
   const uncertain=needsReview(n)?' · 待复核':'';
-  return `<span class="mpred ${p.drinking?'y':'n'}" title="${esc(p.by||'模型')} · 模型参考，需人工确认">模型参考：${p.drinking?'疑似喝水':'未发现喝水'}${uncertain}</span>`;
+  const settled=!needsReview(n);
+  return `<span class="mpred ${p.drinking?'y':'n'}" title="${esc(p.by||'模型')} · ${settled?'可在全部中抽查和改判':'模型参考，需人工确认'}">${settled?'模型判断':'模型参考'}：${p.drinking?(settled?'喝水':'疑似喝水'):'未发现喝水'}${uncertain}</span>`;
 }
 async function fetchLabelPage(cursor,generation){
   const controller=new AbortController();labState.controller=controller;
@@ -684,7 +685,7 @@ async function fetchLabelPage(cursor,generation){
 }
 function mergeLabelPage(data){
   if(!clipsData)clipsData={clips:[]};
-  for(const key of ['labels','durations','meta','notes','review_candidates','candidate_only','water_review','predictions','prediction_details']){
+  for(const key of ['labels','durations','meta','notes','review_candidates','review_required','candidate_only','water_review','predictions','prediction_details']){
     clipsData[key]={...clipsData[key],...data[key]};
   }
   clipsData.clips=[...new Set([...clipsData.clips,...data.clips])];
