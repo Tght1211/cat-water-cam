@@ -83,26 +83,57 @@ def test_preroll_frames_written(tmp_path):
     assert n >= 20               # 至少包含 pre-roll 的那些帧
 
 
-def test_unlimited_session_keeps_whole_visit_past_one_minute(tmp_path):
+def test_frame_budget_caps_video_even_if_timestamps_stall(tmp_path):
+    s, rec = _make(tmp_path, dwell=0, maxlen=4)
+    fb, frame = FrameBuffer(1, 10), _frame()
+    for i in range(10):
+        fb.add(i / 10, frame)
+    s.update(100, frame, True, 100, fb)
+    results = [s.update(100 + i / 100, frame, True, 100, fb) for i in range(1, 50)]
+    result = next(r for r in results if r is not None)
+    assert result.end_reason == 'limit'
+    cap = cv2.VideoCapture(str(rec.clips_dir / result.clip_name))
+    assert cap.get(cv2.CAP_PROP_FRAME_COUNT) == 40
+    cap.release()
+
+
+def test_oversized_preroll_cannot_exceed_limit(tmp_path):
+    s, rec = _make(tmp_path, dwell=0, maxlen=2)
+    fb, frame = FrameBuffer(10, 10), _frame()
+    for i in range(100):
+        fb.add(i / 10, frame)
+    s.update(100, frame, True, 100, fb)
+    result = s.update(100.1, frame, True, 100, fb)
+    assert result.end_reason == 'limit'
+    cap = cv2.VideoCapture(str(rec.clips_dir / result.clip_name))
+    assert cap.get(cv2.CAP_PROP_FRAME_COUNT) == 20
+    cap.release()
+
+
+def test_legacy_unlimited_session_caps_whole_file_at_one_minute(tmp_path):
     s, rec = _make(tmp_path, dwell=2, grace=3, maxlen=0, cooldown=60)
     fb = FrameBuffer(5, 10)
     frame = _frame()
     for i in range(21):
         fb.add(i / 10, frame)
     s.update(2, frame, True, 0, fb)
+    results = []
     for i in range(21, 1201):
-        assert s.update(i / 10, frame, True, 0, fb) is None
-    for i in range(1201, 1230):
-        assert s.update(i / 10, frame, False, None, fb) is None
-    result = s.update(123, frame, False, None, fb)
+        result = s.update(i / 10, frame, True, 0, fb)
+        if result:
+            results.append(result)
+    assert len(results) == 1
+    result = results[0]
     assert result.presence_start == 0
-    assert result.presence_end == 120
-    assert result.audio_end == 123
-    assert result.end_reason == 'left'
+    assert result.audio_end - result.audio_start <= 60
+    assert result.end_reason == 'limit'
     cap = cv2.VideoCapture(str(rec.clips_dir / result.clip_name))
-    assert cap.get(cv2.CAP_PROP_FRAME_COUNT) >= 1230
+    assert 590 <= cap.get(cv2.CAP_PROP_FRAME_COUNT) <= 600
+    assert cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS) <= 60
     cap.release()
-    # 已超过开始时的一分钟，离开后的下一次独立到访可正常录制。
+    # 确认持续离开后，下一次独立到访才恢复录制。
+    s.update(120.1, frame, False, None, fb)
+    s.update(123.1, frame, False, None, fb)
     s.update(126, frame, True, 124, fb)
     assert s.recording
     s.close()
@@ -128,7 +159,11 @@ def test_configured_cap_does_not_repeat_same_visit(tmp_path):
     s.update(180, frame, True, 100, fb)
     assert not s.recording
     s.update(181, frame, False, None, fb)
-    s.update(182, frame, True, 182, fb)
+    s.update(182, frame, True, 100, fb)  # 短暂漏检不算离开
+    assert not s.recording
+    s.update(183, frame, False, None, fb)
+    s.update(185, frame, False, None, fb)
+    s.update(186, frame, True, 186, fb)
     assert s.recording
     s.close()
 

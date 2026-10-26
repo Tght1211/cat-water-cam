@@ -269,8 +269,8 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
     # 起不来（无权限/无设备）由 AudioRing 内部看门狗兜底 → 无声，不影响录制。
     audio_ring = None
     if cfg.record_audio and session is not None:
-        # 不限长的视频仍使用有界音频缓冲，避免麦克风持续占满内存。
-        ring_seconds = cfg.preroll_seconds + (cfg.max_session_seconds or 3600.0) + 10.0
+        # 视频包含补录最多一分钟；音频只需覆盖这一段与收尾余量。
+        ring_seconds = cfg.max_session_seconds + 10.0
         if cfg.video_source.startswith('wosee:'):
             from catcam.wosee_audio import WoSeeAudioRing
             audio_ring = WoSeeAudioRing(cfg.video_source, max_seconds=ring_seconds)
@@ -453,7 +453,7 @@ def main(config_path: str = "config.json", preview_only: bool = False) -> None:
         print(
             f"录制模式：整段会话（前补 {cfg.preroll_seconds:g}s，"
             f"离开 {cfg.session_end_grace_seconds:g}s 收尾，"
-            f"{'不限时长' if cfg.max_session_seconds <= 0 else f'封顶 {cfg.max_session_seconds:g}s'}）"
+            f"含补录封顶 {cfg.max_session_seconds:g}s）"
         )
     if cfg.motion_recording:
         print(f'画面变化即录制：全画面触发、无停留门槛、无冷却，{cfg.frame_width}×{cfg.frame_height} / {cfg.fps} fps；视频滚动保留 {cfg.retention_days:g} 天。')

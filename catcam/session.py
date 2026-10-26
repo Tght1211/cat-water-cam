@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from catcam.config import session_limit_seconds
 from catcam.recorder import clip_filename, open_writer
 
 
@@ -40,7 +41,7 @@ class DrinkSession:
         self.recorder = recorder  # ClipRecorder：取 clips_dir / fps / max_clips
         self.dwell_seconds = dwell_seconds
         self.end_grace_seconds = end_grace_seconds
-        self.max_session_seconds = max_session_seconds
+        self.max_session_seconds = session_limit_seconds(max_session_seconds)
         self.cooldown_seconds = cooldown_seconds
         self._writer = None
         self._start: float = 0.0
@@ -54,6 +55,9 @@ class DrinkSession:
         self._presence_start = None
         self._last_frame_at = 0.0
         self._await_leave = False
+        self._leave_start = None
+        self._frames_written = 0
+        self._max_frames = max(1, int(self.max_session_seconds * self.recorder.fps))
 
     @property
     def recording(self) -> bool:
@@ -62,10 +66,15 @@ class DrinkSession:
     def update(self, now, frame, in_roi, in_roi_since, frame_buffer, candidate_only=False) -> SessionResult | None:
         """采集线程每帧（按 fps 节奏）调用。返回非 None 表示刚收尾了一段会话。"""
         if self._writer is None:
-            # 达到手动设置的时长上限后，必须先离场，不能把同一次喝水切成多次。
+            # 达到上限后，必须持续离场满宽限时间；一次漏检不能重开同一次会话。
             if self._await_leave:
-                if not in_roi:
+                if in_roi:
+                    self._leave_start = None
+                elif self._leave_start is None:
+                    self._leave_start = now
+                if self._leave_start is not None and now - self._leave_start >= self.end_grace_seconds:
                     self._await_leave = False
+                    self._leave_start = None
                 return None
             if now < self._cooldown_until:
                 return None
@@ -76,17 +85,26 @@ class DrinkSession:
                 self._candidate_only=candidate_only
             return None
 
+        # 同时限制真实时间与编码帧数，包含 pre-roll，避免补录或时间戳异常越过上限。
+        capped = (now - self._audio_start >= self.max_session_seconds
+                  or self._frames_written >= self._max_frames)
+        left = not in_roi and now - self._last_present >= self.end_grace_seconds
+        if capped:
+            self._await_leave = not left and self.cooldown_seconds > 0
+            self._leave_start = None
+            return self._finish(min(now, self._audio_start + self.max_session_seconds),
+                                "left" if left else "limit")
+
         # 录制中：写当前帧
         self._writer.write(frame)
+        self._frames_written += 1
         self._last_frame_at = now
         self._candidate_only |= candidate_only
         if in_roi:
             self._last_present = now
         left = not in_roi and now - self._last_present >= self.end_grace_seconds
-        capped = self.max_session_seconds > 0 and now - self._start >= self.max_session_seconds
-        if left or capped:
-            self._await_leave = capped and not left and self.cooldown_seconds > 0
-            return self._finish(now, "left" if left else "limit")
+        if left:
+            return self._finish(now, "left")
         return None
 
     def _begin(self, now, frame, frame_buffer) -> None:
@@ -95,9 +113,10 @@ class DrinkSession:
         self._writing_path = self._path.with_name('.' + self._path.stem + '.recording.mp4')
         self._writer = open_writer(self._writing_path, self.recorder.fps, (width, height))
         # pre-roll：把回放缓冲（含凑近过程 + dwell 这几秒）先写进去，避免漏掉开头。
-        preroll_frames = frame_buffer.all_frames()
+        preroll_frames = frame_buffer.all_frames()[-self._max_frames:]
         for f in preroll_frames:
             self._writer.write(f)
+        self._frames_written = len(preroll_frames)
         self._start = now
         self._last_frame_at = now
         self._last_present = now

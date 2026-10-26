@@ -10,6 +10,7 @@ def test_defaults_have_expected_values():
     assert c.fps == 30
     assert c.motion_recording is True
     assert c.retention_days == 3
+    assert c.max_session_seconds == 60
     assert c.video_source == ""
     assert c.web_host == "127.0.0.1"
 
@@ -19,6 +20,14 @@ def test_derived_paths(tmp_path):
     assert c.clips_dir == tmp_path / "clips"
     assert c.training_dir == tmp_path / "training"
     assert c.db_path == tmp_path / "catcam.db"
+
+
+def test_old_unlimited_or_excessive_session_limit_is_bounded(tmp_path):
+    path = tmp_path / 'config.json'
+    for limit in (0, -1, 555, float('inf'), float('nan')):
+        path.write_text(json.dumps({'max_session_seconds': limit}))
+        assert load_config(path).max_session_seconds == 60
+    assert Config(max_session_seconds=20).max_session_seconds == 20
 
 
 def test_load_config_creates_default_file_when_missing(tmp_path):

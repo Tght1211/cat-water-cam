@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, asdict, field, fields
 from pathlib import Path
+
+
+def session_limit_seconds(value: float) -> float:
+    """旧配置的不限时长也受一分钟保护，避免误判持续录制。"""
+    return min(value, 60.0) if math.isfinite(value) and value > 0 else 60.0
 
 
 @dataclass
@@ -30,7 +36,7 @@ class Config:
     record_session: bool = True
     preroll_seconds: float = 3.0          # 触发前补录这么久（猫凑近的过程）
     session_end_grace_seconds: float = 3.0  # 猫离开持续这么久才算结束、收尾存盘
-    max_session_seconds: float = 15.0      # 单段上限；设为 0 则持续录到猫离开，完整保留会话
+    max_session_seconds: float = 60.0      # 包含补录的单段上限；0 或超过 60 秒也按 60 秒保护
     yolo_model: str = "yolov8n.pt"
     cat_confidence: float = 0.4
     data_dir: str = "data"
@@ -103,6 +109,9 @@ class Config:
     audio_input_format: str = "avfoundation"  # 平台相关：mac=avfoundation；Linux 可改 alsa/pulse
     audio_device: str = ":1"                   # 传给 ffmpeg -i 的值；":1"=仅音频设备 1（本机相机麦）
     audio_sample_rate: int = 16000
+
+    def __post_init__(self):
+        self.max_session_seconds = session_limit_seconds(self.max_session_seconds)
 
     @property
     def clips_dir(self) -> Path:
